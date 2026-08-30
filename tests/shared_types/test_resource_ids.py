@@ -19,6 +19,5 @@ def test_require_resource_id_removes_outer_whitespace() -> None:
 
 
 def test_require_resource_id_rejects_an_empty_value() -> None:
-    with pytest.raises(ValueError, match="repository_id cannot be empty"):
-        require_resource_id("   ", "repository_id")
-
+    with pytest.raises(ValueError, match="仓库 ID 不能为空"):
+        require_resource_id("   ", "仓库 ID")

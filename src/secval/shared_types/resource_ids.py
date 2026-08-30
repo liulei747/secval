@@ -31,5 +31,5 @@ def require_resource_id(value: str, field_name: str) -> str:
 
     cleaned_value = value.strip()
     if not cleaned_value:
-        raise ValueError(f"{field_name} cannot be empty")
+        raise ValueError(f"{field_name}不能为空")
     return cleaned_value
