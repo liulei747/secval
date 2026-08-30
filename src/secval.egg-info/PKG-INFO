@@ -3,8 +3,13 @@ Name: secval
 Version: 0.1.0
 Summary: Code analysis and hybrid search platform
 Requires-Python: >=3.12
+Requires-Dist: fastapi==0.141.1
 Requires-Dist: opensearch-py==3.2.0
+Requires-Dist: pyyaml==6.0.3
+Requires-Dist: qdrant-client==1.19.0
+Requires-Dist: sentence-transformers==5.7.0
 Requires-Dist: tree-sitter==0.26.0
 Requires-Dist: tree-sitter-java==0.23.5
+Requires-Dist: uvicorn==0.52.4
 Provides-Extra: dev
 Requires-Dist: pytest==9.1.1; extra == "dev"

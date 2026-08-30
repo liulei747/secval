@@ -33,15 +33,21 @@ def test_save_multiple_code_chunks(mock_bulk: MagicMock) -> None:
     code_chunks = [create_code_chunk(1), create_code_chunk(2)]
     mock_bulk.return_value = (2, [])
 
-    saved_count = save_code_chunks(connection, code_chunks)
+    saved_count = save_code_chunks(
+        connection,
+        code_chunks,
+        index_run_id="run-1",
+    )
 
     assert saved_count == 2
 
     actions = mock_bulk.call_args.args[1]
+    assert mock_bulk.call_args.kwargs["refresh"] == "wait_for"
     assert len(actions) == 2
     assert actions[0]["_index"] == CODE_INDEX_NAME
     assert actions[0]["_id"] == "chunk-1"
     assert actions[0]["_source"]["content"] == "void method1() {}"
+    assert actions[0]["_source"]["index_run_id"] == "run-1"
     assert actions[1]["_id"] == "chunk-2"
 
 
@@ -53,7 +59,7 @@ def test_do_not_request_open_search_for_empty_list(
 ) -> None:
     connection = MagicMock()
 
-    saved_count = save_code_chunks(connection, [])
+    saved_count = save_code_chunks(connection, [], index_run_id="run-1")
 
     assert saved_count == 0
     mock_bulk.assert_not_called()

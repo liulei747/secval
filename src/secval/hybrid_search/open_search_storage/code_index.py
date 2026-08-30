@@ -3,7 +3,7 @@
 from opensearchpy import OpenSearch
 
 
-CODE_INDEX_NAME = "secval-code-chunks-v1"
+CODE_INDEX_NAME = "secval-code-chunks-v3"
 
 
 CODE_INDEX_BODY = {
@@ -21,10 +21,17 @@ CODE_INDEX_BODY = {
             "file_id": {"type": "keyword"},
             "repository_id": {"type": "keyword"},
             "snapshot_id": {"type": "keyword"},
+            # 标记代码块属于哪一次索引，用于安全清理上一批数据。
+            "index_run_id": {"type": "keyword"},
             "relative_path": {"type": "keyword"},
             "language": {"type": "keyword"},
             "chunk_type": {"type": "keyword"},
             "content": {"type": "text"},
+            # 保存经过代码分词器处理的文本，让 user 可以匹配 findUser。
+            "search_text": {
+                "type": "text",
+                "analyzer": "whitespace",
+            },
             "start_line": {"type": "integer"},
             "end_line": {"type": "integer"},
             "symbol_id": {"type": "keyword"},

@@ -1,0 +1,23 @@
+# OpenSearch 保存代码正文并执行 BM25 关键词搜索。
+open_search:
+  host: 127.0.0.1
+  port: 9200
+
+# Qdrant 保存代码向量并执行语义搜索。
+qdrant:
+  host: 127.0.0.1
+  port: 6333
+
+embedding:
+  # 模型名称和维度与当前 Qdrant Collection 版本绑定，不能单独修改。
+  model_name: Qwen/Qwen3-Embedding-0.6B
+  dimension: 1024
+  # 没有明确配置和验证 GPU 前，默认使用 CPU，保证行为可预期。
+  device: cpu
+  # 控制单次代码文本的最大 Token 数，降低超长方法的内存占用。
+  max_sequence_length: 4096
+
+fusion:
+  # 每一路多召回候选，再由 RRF 合并为用户要求的 Top K。
+  candidate_multiplier: 3
+  max_candidate_count: 100

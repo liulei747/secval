@@ -35,9 +35,23 @@ services:
       retries: 12
       start_period: 60s
 
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    container_name: secval-qdrant
+    environment:
+      - QDRANT__TELEMETRY_DISABLED=true
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - services
+    restart: unless-stopped
+
 volumes:
   opensearch-data:
+  qdrant-data:
 
 networks:
   services:
-

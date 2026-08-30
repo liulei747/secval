@@ -5,11 +5,19 @@ from typing import Any
 from opensearchpy import OpenSearch
 
 from secval.code_processing.code_models import CodeChunk
+from secval.hybrid_search.code_tokenizing.tokenize_code import tokenize_code
 from secval.hybrid_search.open_search_storage.code_index import CODE_INDEX_NAME
 
 
 def code_chunk_to_document(code_chunk: CodeChunk) -> dict[str, Any]:
     """把 CodeChunk 转换成 OpenSearch 可以保存的普通字典。"""
+
+    text_to_search = code_chunk.content
+
+    if code_chunk.symbol_name is not None:
+        text_to_search = f"{code_chunk.symbol_name} {text_to_search}"
+
+    search_tokens = tokenize_code(text_to_search)
 
     return {
         "chunk_id": code_chunk.chunk_id,
@@ -20,6 +28,7 @@ def code_chunk_to_document(code_chunk: CodeChunk) -> dict[str, Any]:
         "language": code_chunk.language,
         "chunk_type": code_chunk.chunk_type,
         "content": code_chunk.content,
+        "search_text": " ".join(search_tokens),
         "start_line": code_chunk.start_line,
         "end_line": code_chunk.end_line,
         "symbol_id": code_chunk.symbol_id,
