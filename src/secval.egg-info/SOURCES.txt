@@ -32,6 +32,10 @@ src/secval/hybrid_search/__init__.py
 src/secval/hybrid_search/code_tokenizing/__init__.py
 src/secval/hybrid_search/code_tokenizing/tokenize_code.py
 src/secval/hybrid_search/keyword_search/__init__.py
+src/secval/hybrid_search/open_search_storage/__init__.py
+src/secval/hybrid_search/open_search_storage/code_index.py
+src/secval/hybrid_search/open_search_storage/open_search_connection.py
+src/secval/hybrid_search/open_search_storage/save_code_chunk.py
 src/secval/hybrid_search/search_models/__init__.py
 src/secval/hybrid_search/search_models/search_query.py
 src/secval/hybrid_search/search_models/search_result.py

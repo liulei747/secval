@@ -14,3 +14,30 @@ Secval 是一个面向代码分析的大型 Web 平台。
 
 Neo4j、Joern、Agent 和 MCP 暂未创建。
 
+## 本地服务
+
+本地服务由根目录的 `compose.yaml` 管理，Compose 项目名称是 `secval`。
+
+当前服务：
+
+- `secval-opensearch`：单节点 OpenSearch，仅监听本机 `127.0.0.1:9200`。
+
+启动：
+
+```powershell
+docker compose up -d opensearch
+```
+
+查看状态：
+
+```powershell
+docker compose ps
+```
+
+停止服务但保留索引数据：
+
+```powershell
+docker compose down
+```
+
+本地开发暂时关闭了 OpenSearch Security 插件。这个配置不能直接用于生产环境，也不能把端口改成公网监听后继续使用。

@@ -1,0 +1,43 @@
+name: secval
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    container_name: secval-opensearch
+    environment:
+      - cluster.name=secval-search
+      - node.name=secval-opensearch
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - services
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl --silent --fail http://localhost:9200/_cluster/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+volumes:
+  opensearch-data:
+
+networks:
+  services:
+
