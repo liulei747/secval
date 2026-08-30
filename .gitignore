@@ -8,4 +8,3 @@ venv/
 .env
 data/*.db
 data/index_state/
-
