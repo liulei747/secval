@@ -35,6 +35,7 @@ def create_symbol_id(
     symbol_type: str,
     full_name: str,
     start_line: int,
+    start_column: int = 1,
 ) -> SymbolId:
     """根据符号位置和名称生成稳定的符号 ID。"""
 
@@ -47,6 +48,9 @@ def create_symbol_id(
     if start_line < 1:
         raise ValueError("符号开始行号必须大于或等于 1")
 
+    if start_column < 1:
+        raise ValueError("符号开始列号必须大于或等于 1")
+
     values = [
         checked_repository_id,
         checked_snapshot_id,
@@ -54,6 +58,7 @@ def create_symbol_id(
         checked_symbol_type,
         checked_full_name,
         str(start_line),
+        str(start_column),
     ]
     return SymbolId(_create_hash_id("symbol", values))
 
@@ -64,8 +69,9 @@ def create_chunk_id(
     start_line: int,
     end_line: int,
     content: str,
+    start_column: int = 1,
 ) -> ChunkId:
-    """根据来源文件、行号和代码内容生成稳定的代码块 ID。"""
+    """根据来源文件、精确位置和代码内容生成稳定的代码块 ID。"""
 
     checked_file_id = require_resource_id(file_id, "文件 ID")
     checked_chunk_type = _require_text(chunk_type, "代码块类型")
@@ -77,11 +83,15 @@ def create_chunk_id(
     if end_line < start_line:
         raise ValueError("代码块结束行号不能小于开始行号")
 
+    if start_column < 1:
+        raise ValueError("代码块开始列号必须大于或等于 1")
+
     values = [
         checked_file_id,
         checked_chunk_type,
         str(start_line),
         str(end_line),
+        str(start_column),
         checked_content,
     ]
     return ChunkId(_create_hash_id("chunk", values))

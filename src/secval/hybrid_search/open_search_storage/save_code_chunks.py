@@ -3,7 +3,10 @@
 from opensearchpy import OpenSearch
 from opensearchpy.helpers import bulk
 
-from secval.code_processing.code_models import CodeChunk
+from secval.code_processing.code_models import (
+    CodeChunk,
+    require_unique_chunk_ids,
+)
 from secval.hybrid_search.open_search_storage.code_index import CODE_INDEX_NAME
 from secval.hybrid_search.open_search_storage.save_code_chunk import (
     code_chunk_to_document,
@@ -26,6 +29,8 @@ def save_code_chunks(
 
     if len(code_chunks) == 0:
         return 0
+
+    require_unique_chunk_ids(code_chunks)
 
     actions = []
 

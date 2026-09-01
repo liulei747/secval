@@ -6,6 +6,7 @@ from secval.code_processing.code_models import (
     CodeChunk,
     CodeRepository,
     CodeSnapshot,
+    FileProcessError,
     RepositoryProcessResult,
 )
 from secval.hybrid_search.local_embedding import EMBEDDING_DIMENSION
@@ -16,6 +17,8 @@ from secval.shared_types import (
     RepositoryId,
     SnapshotId,
 )
+
+DEFAULT_REPOSITORY_ID = RepositoryId("repository-1")
 
 
 def create_repository() -> CodeRepository:
@@ -29,7 +32,7 @@ def create_repository() -> CodeRepository:
 
 
 def create_snapshot(
-    repository_id: RepositoryId = RepositoryId("repository-1"),
+    repository_id: RepositoryId = DEFAULT_REPOSITORY_ID,
 ) -> CodeSnapshot:
     """创建测试使用的代码版本。"""
 
@@ -192,15 +195,67 @@ def test_do_not_delete_old_data_when_vector_save_fails() -> None:
         "secval.hybrid_search.search_indexing.index_repository.delete_old_code_chunks"
     ) as mock_delete_chunks, patch(
         "secval.hybrid_search.search_indexing.index_repository.delete_old_code_vectors"
-    ) as mock_delete_vectors:
-        with pytest.raises(RuntimeError, match="向量写入失败"):
-            index_repository(
-                open_search_connection=MagicMock(),
-                qdrant_client=MagicMock(),
-                embedding_model=embedding_model,
-                repository=create_repository(),
-                snapshot=create_snapshot(),
-            )
+    ) as mock_delete_vectors, pytest.raises(
+        RuntimeError,
+        match="向量写入失败",
+    ):
+        index_repository(
+            open_search_connection=MagicMock(),
+            qdrant_client=MagicMock(),
+            embedding_model=embedding_model,
+            repository=create_repository(),
+            snapshot=create_snapshot(),
+        )
 
+    mock_delete_chunks.assert_not_called()
+    mock_delete_vectors.assert_not_called()
+
+
+def test_do_not_replace_old_index_when_any_source_file_fails() -> None:
+    process_result = RepositoryProcessResult(
+        total_files=2,
+        successful_files=1,
+        chunks=create_process_result().chunks,
+        errors=[
+            FileProcessError(
+                relative_path="Broken.java",
+                message="Java 文件存在语法错误",
+            )
+        ],
+    )
+    embedding_model = MagicMock()
+
+    with patch(
+        "secval.hybrid_search.search_indexing.index_repository.create_code_index",
+        return_value=False,
+    ), patch(
+        "secval.hybrid_search.search_indexing.index_repository.create_code_vector_collection",
+        return_value=False,
+    ), patch(
+        "secval.hybrid_search.search_indexing.index_repository.process_repository",
+        return_value=process_result,
+    ), patch(
+        "secval.hybrid_search.search_indexing.index_repository.save_code_chunks"
+    ) as mock_save_chunks, patch(
+        "secval.hybrid_search.search_indexing.index_repository.save_code_vectors"
+    ) as mock_save_vectors, patch(
+        "secval.hybrid_search.search_indexing.index_repository.delete_old_code_chunks"
+    ) as mock_delete_chunks, patch(
+        "secval.hybrid_search.search_indexing.index_repository.delete_old_code_vectors"
+    ) as mock_delete_vectors, pytest.raises(
+        ValueError,
+        match="本次索引未替换",
+    ):
+        index_repository(
+            open_search_connection=MagicMock(),
+            qdrant_client=MagicMock(),
+            embedding_model=embedding_model,
+            repository=create_repository(),
+            snapshot=create_snapshot(),
+        )
+
+    embedding_model.embed_code.assert_not_called()
+    mock_save_chunks.assert_not_called()
+    mock_save_vectors.assert_not_called()
     mock_delete_chunks.assert_not_called()
     mock_delete_vectors.assert_not_called()

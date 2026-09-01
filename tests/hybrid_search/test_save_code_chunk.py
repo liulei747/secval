@@ -52,7 +52,9 @@ def test_convert_code_chunk_to_document() -> None:
         "start_line": 10,
         "end_line": 12,
         "symbol_id": "symbol-1",
+        "symbol_ids": ["symbol-1"],
         "symbol_name": "findUser",
+        "symbol_names": ["findUser"],
     }
 
 

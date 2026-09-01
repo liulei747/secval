@@ -2,7 +2,7 @@
 
 from opensearchpy import OpenSearch
 
-CODE_INDEX_NAME = "secval-code-chunks-v5"
+CODE_INDEX_NAME = "secval-code-chunks-v6"
 
 
 CODE_INDEX_BODY = {
@@ -66,7 +66,15 @@ CODE_INDEX_BODY = {
             "start_line": {"type": "integer"},
             "end_line": {"type": "integer"},
             "symbol_id": {"type": "keyword"},
+            "symbol_ids": {"type": "keyword"},
             "symbol_name": {
+                "type": "text",
+                "analyzer": "code_analyzer",
+                "fields": {
+                    "exact": {"type": "keyword"},
+                },
+            },
+            "symbol_names": {
                 "type": "text",
                 "analyzer": "code_analyzer",
                 "fields": {

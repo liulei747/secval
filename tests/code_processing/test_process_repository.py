@@ -30,9 +30,16 @@ def test_process_a_java_repository(tmp_path: Path) -> None:
     assert result.total_files == 1
     assert result.successful_files == 1
     assert result.errors == []
-    assert len(result.chunks) == 1
-    assert result.chunks[0].symbol_name == "demo.UserService.findUser()"
-    assert "public Object findUser()" in result.chunks[0].content
+    assert {chunk.chunk_type for chunk in result.chunks} == {
+        "file",
+        "class",
+        "method",
+    }
+    method_chunk = next(
+        chunk for chunk in result.chunks if chunk.chunk_type == "method"
+    )
+    assert method_chunk.symbol_name == "demo.UserService.findUser()"
+    assert "public Object findUser()" in method_chunk.content
 
 
 def test_continue_after_one_java_file_has_syntax_error(
@@ -57,7 +64,11 @@ def test_continue_after_one_java_file_has_syntax_error(
 
     assert result.total_files == 2
     assert result.successful_files == 1
-    assert len(result.chunks) == 1
+    assert {chunk.chunk_type for chunk in result.chunks} == {
+        "file",
+        "class",
+        "method",
+    }
     assert len(result.errors) == 1
     assert result.errors[0].relative_path == "Invalid.java"
     assert "语法错误" in result.errors[0].message

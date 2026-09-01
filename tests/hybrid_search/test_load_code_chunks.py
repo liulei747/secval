@@ -51,3 +51,27 @@ def test_load_chunks_in_requested_rank_order() -> None:
         "chunk-2",
         "chunk-1",
     ]
+
+
+def test_load_shared_field_chunk_keeps_all_symbol_references() -> None:
+    connection = MagicMock()
+    document = create_document("chunk-fields")
+    document["_source"].update(
+        {
+            "chunk_type": "field",
+            "symbol_id": None,
+            "symbol_name": "A.first, A.second",
+            "symbol_ids": ["symbol-first", "symbol-second"],
+            "symbol_names": ["A.first", "A.second"],
+        }
+    )
+    connection.mget.return_value = {"docs": [document]}
+
+    chunks = load_code_chunks_by_ids(
+        connection,
+        [ChunkId("chunk-fields")],
+    )
+
+    assert chunks[0].symbol_id is None
+    assert chunks[0].symbol_ids == ["symbol-first", "symbol-second"]
+    assert chunks[0].symbol_names == ["A.first", "A.second"]

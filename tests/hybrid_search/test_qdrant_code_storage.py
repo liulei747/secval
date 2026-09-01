@@ -114,6 +114,22 @@ def test_validate_all_vectors_before_writing() -> None:
     client.upload_points.assert_not_called()
 
 
+def test_reject_duplicate_chunk_ids_before_vector_write() -> None:
+    client = MagicMock()
+    chunks = [create_code_chunk(), create_code_chunk()]
+    vectors = [[0.0] * EMBEDDING_DIMENSION for _ in chunks]
+
+    with pytest.raises(ValueError, match="代码块 ID 不能重复"):
+        save_code_vectors(
+            client=client,
+            code_chunks=chunks,
+            vectors=vectors,
+            index_run_id="run-1",
+        )
+
+    client.upload_points.assert_not_called()
+
+
 def test_delete_only_vectors_from_older_run() -> None:
     client = MagicMock()
 

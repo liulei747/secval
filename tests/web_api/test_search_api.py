@@ -103,6 +103,10 @@ def test_search_endpoint_returns_code_results() -> None:
     assert body["results"][0]["symbol_name"] == (
         "UserService.findUser()"
     )
+    assert body["results"][0]["symbol_ids"] == ["symbol-1"]
+    assert body["results"][0]["symbol_names"] == [
+        "UserService.findUser()"
+    ]
     assert body["results"][0]["keyword_score"] == 4.2
     assert body["results"][0]["vector_score"] == 0.8
 

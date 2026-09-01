@@ -5,7 +5,7 @@ from secval.code_processing.code_models import (
     FileProcessError,
     RepositoryProcessResult,
 )
-from secval.code_processing.code_splitting.java import split_java_methods
+from secval.code_processing.code_splitting.java import split_java_declarations
 from secval.code_processing.repository_scan import scan_repository
 from secval.code_processing.source_parsing import parse_java
 from secval.code_processing.source_reading import read_source_file
@@ -25,7 +25,7 @@ def process_repository(
     snapshot_id: SnapshotId,
     max_file_size: int = DEFAULT_MAX_FILE_SIZE,
 ) -> RepositoryProcessResult:
-    """扫描仓库，并把可以正常处理的 Java 方法转换成代码块。"""
+    """扫描仓库，并把可以正常处理的 Java 声明转换成代码块。"""
 
     relative_paths = scan_repository(root_path)
     chunks: list[CodeChunk] = []
@@ -48,7 +48,7 @@ def process_repository(
                 max_file_size=max_file_size,
             )
             syntax_tree = parse_java(source_file)
-            file_chunks = split_java_methods(source_file, syntax_tree)
+            file_chunks = split_java_declarations(source_file, syntax_tree)
             chunks.extend(file_chunks)
             successful_files += 1
 

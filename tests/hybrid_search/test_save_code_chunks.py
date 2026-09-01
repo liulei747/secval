@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from secval.code_processing.code_models import CodeChunk
 from secval.hybrid_search.open_search_storage import (
     CODE_INDEX_NAME,
@@ -62,4 +64,22 @@ def test_do_not_request_open_search_for_empty_list(
     saved_count = save_code_chunks(connection, [], index_run_id="run-1")
 
     assert saved_count == 0
+    mock_bulk.assert_not_called()
+
+
+@patch(
+    "secval.hybrid_search.open_search_storage.save_code_chunks.bulk"
+)
+def test_reject_duplicate_chunk_ids_before_open_search_write(
+    mock_bulk: MagicMock,
+) -> None:
+    duplicate_chunks = [create_code_chunk(1), create_code_chunk(1)]
+
+    with pytest.raises(ValueError, match="代码块 ID 不能重复"):
+        save_code_chunks(
+            MagicMock(),
+            duplicate_chunks,
+            index_run_id="run-1",
+        )
+
     mock_bulk.assert_not_called()

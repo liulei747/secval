@@ -1,6 +1,6 @@
 """可搜索代码块的数据模型。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from secval.shared_types import (
     ChunkId,
@@ -31,6 +31,8 @@ class CodeChunk:
     end_line: int
     symbol_id: SymbolId | None = None
     symbol_name: str | None = None
+    symbol_ids: list[SymbolId] = field(default_factory=list)
+    symbol_names: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """创建对象时检查代码块的基本内容和行号。"""
@@ -64,4 +66,28 @@ class CodeChunk:
 
         if self.end_line < self.start_line:
             raise ValueError("代码块结束行号不能小于开始行号")
+
+        if self.symbol_id is not None and not self.symbol_id.strip():
+            raise ValueError("代码块符号 ID 不能为空字符串")
+
+        if self.symbol_name is not None and not self.symbol_name.strip():
+            raise ValueError("代码块符号名称不能为空字符串")
+
+        if self.symbol_id is not None and not self.symbol_ids:
+            self.symbol_ids = [self.symbol_id]
+
+        if self.symbol_name is not None and not self.symbol_names:
+            self.symbol_names = [self.symbol_name]
+
+        if any(not symbol_id.strip() for symbol_id in self.symbol_ids):
+            raise ValueError("代码块符号 ID 列表不能包含空值")
+
+        if any(not symbol_name.strip() for symbol_name in self.symbol_names):
+            raise ValueError("代码块符号名称列表不能包含空值")
+
+        if len(set(self.symbol_ids)) != len(self.symbol_ids):
+            raise ValueError("代码块符号 ID 列表不能包含重复值")
+
+        if self.symbol_ids and len(self.symbol_ids) != len(self.symbol_names):
+            raise ValueError("代码块符号 ID 和名称数量必须一致")
 

@@ -9,6 +9,9 @@ from secval.code_processing.code_models.repository_process_result import (
     RepositoryProcessResult,
 )
 from secval.code_processing.code_models.source_file import SourceFile
+from secval.code_processing.code_models.validate_code_chunks import (
+    require_unique_chunk_ids,
+)
 
 __all__ = [
     "CodeChunk",
@@ -18,4 +21,5 @@ __all__ = [
     "FileProcessError",
     "RepositoryProcessResult",
     "SourceFile",
+    "require_unique_chunk_ids",
 ]

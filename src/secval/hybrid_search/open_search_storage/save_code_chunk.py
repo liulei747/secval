@@ -13,8 +13,8 @@ def code_chunk_to_document(code_chunk: CodeChunk) -> dict[str, Any]:
 
     text_to_search = code_chunk.content
 
-    if code_chunk.symbol_name is not None:
-        text_to_search = f"{code_chunk.symbol_name} {text_to_search}"
+    if code_chunk.symbol_names:
+        text_to_search = f"{' '.join(code_chunk.symbol_names)} {text_to_search}"
 
     return {
         "chunk_id": code_chunk.chunk_id,
@@ -29,7 +29,9 @@ def code_chunk_to_document(code_chunk: CodeChunk) -> dict[str, Any]:
         "start_line": code_chunk.start_line,
         "end_line": code_chunk.end_line,
         "symbol_id": code_chunk.symbol_id,
+        "symbol_ids": code_chunk.symbol_ids,
         "symbol_name": code_chunk.symbol_name,
+        "symbol_names": code_chunk.symbol_names,
     }
 
 

@@ -46,6 +46,8 @@ class SearchResultResponse(BaseModel):
     end_line: int
     symbol_id: str | None
     symbol_name: str | None
+    symbol_ids: list[str]
+    symbol_names: list[str]
     rank: int
     final_score: float
     keyword_score: float | None
@@ -307,6 +309,8 @@ def _create_result_response(result: SearchResult) -> SearchResultResponse:
             str(chunk.symbol_id) if chunk.symbol_id is not None else None
         ),
         symbol_name=chunk.symbol_name,
+        symbol_ids=[str(symbol_id) for symbol_id in chunk.symbol_ids],
+        symbol_names=list(chunk.symbol_names),
         rank=result.rank,
         final_score=result.final_score,
         keyword_score=result.keyword_score,

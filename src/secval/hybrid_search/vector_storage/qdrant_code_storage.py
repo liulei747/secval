@@ -5,11 +5,14 @@ from uuid import NAMESPACE_URL, uuid5
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from secval.code_processing.code_models import CodeChunk
+from secval.code_processing.code_models import (
+    CodeChunk,
+    require_unique_chunk_ids,
+)
 from secval.hybrid_search.local_embedding import EMBEDDING_DIMENSION
 from secval.shared_types import ChunkId, RepositoryId, SnapshotId
 
-CODE_VECTOR_COLLECTION = "secval-code-vectors-qwen3-06b-v1"
+CODE_VECTOR_COLLECTION = "secval-code-vectors-qwen3-06b-v2"
 
 
 def create_qdrant_connection(
@@ -80,6 +83,8 @@ def save_code_vectors(
 
     if len(code_chunks) == 0:
         return 0
+
+    require_unique_chunk_ids(code_chunks)
 
     points: list[models.PointStruct] = []
 

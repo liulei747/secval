@@ -10,6 +10,7 @@ from secval.code_processing.code_models import (
     CodeChunk,
     CodeRepository,
     CodeSnapshot,
+    require_unique_chunk_ids,
 )
 from secval.code_processing.repository_processing import process_repository
 from secval.hybrid_search.local_embedding import LocalEmbeddingModel
@@ -54,6 +55,18 @@ def index_repository(
         repository_id=repository.repository_id,
         snapshot_id=snapshot.snapshot_id,
     )
+
+    if process_result.errors:
+        error_summary = "; ".join(
+            f"{error.relative_path}: {error.message}"
+            for error in process_result.errors[:5]
+        )
+        raise ValueError(
+            "仓库包含无法处理的文件，本次索引未替换："
+            f"{error_summary}"
+        )
+
+    require_unique_chunk_ids(process_result.chunks)
 
     index_run_id = str(uuid4())
     embedding_texts = _create_embedding_texts(process_result.chunks)

@@ -15,8 +15,10 @@ src/secval/code_processing/code_models/code_symbol.py
 src/secval/code_processing/code_models/file_process_error.py
 src/secval/code_processing/code_models/repository_process_result.py
 src/secval/code_processing/code_models/source_file.py
+src/secval/code_processing/code_models/validate_code_chunks.py
 src/secval/code_processing/code_splitting/__init__.py
 src/secval/code_processing/code_splitting/java/__init__.py
+src/secval/code_processing/code_splitting/java/split_java_declarations.py
 src/secval/code_processing/code_splitting/java/split_java_methods.py
 src/secval/code_processing/repository_processing/__init__.py
 src/secval/code_processing/repository_processing/process_repository.py

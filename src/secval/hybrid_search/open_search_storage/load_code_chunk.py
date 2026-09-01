@@ -19,6 +19,7 @@ def document_to_code_chunk(document: dict[str, Any]) -> CodeChunk:
     """把 OpenSearch 返回的普通字典转换成 CodeChunk。"""
 
     symbol_id_value = document.get("symbol_id")
+    symbol_ids = [SymbolId(value) for value in document.get("symbol_ids", [])]
     symbol_id = None
 
     if symbol_id_value is not None:
@@ -37,6 +38,8 @@ def document_to_code_chunk(document: dict[str, Any]) -> CodeChunk:
         end_line=document["end_line"],
         symbol_id=symbol_id,
         symbol_name=document.get("symbol_name"),
+        symbol_ids=symbol_ids,
+        symbol_names=list(document.get("symbol_names", [])),
     )
 
 
