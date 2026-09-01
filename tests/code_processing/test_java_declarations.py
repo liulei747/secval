@@ -304,6 +304,25 @@ def test_deep_expression_does_not_use_python_recursion() -> None:
     assert any(symbol.full_name == "Deep.value()" for symbol in symbols)
 
 
+def test_large_array_initializers_can_be_split() -> None:
+    """大型 Java 数组语法树不能让 Tree-sitter 原生绑定崩溃。"""
+
+    rows = ",".join(
+        "{" + ",".join(str(number) for number in range(32)) + "}"
+        for _ in range(8)
+    )
+    methods = "\n".join(
+        f"int[][] table{method_number}() {{ return new int[][] {{{rows}}}; }}"
+        for method_number in range(30)
+    )
+    source_file = _create_source_file(f"class LargeTables {{ {methods} }}")
+
+    chunks = split_java_declarations(source_file, parse_java(source_file))
+
+    method_chunks = [chunk for chunk in chunks if chunk.chunk_type == "method"]
+    assert len(method_chunks) == 30
+
+
 def test_default_package_file_still_has_a_file_chunk() -> None:
     source_file = _create_source_file("class A {}")
     chunks = split_java_declarations(source_file, parse_java(source_file))

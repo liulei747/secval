@@ -1,4 +1,7 @@
+from io import BytesIO
+from pathlib import Path
 from unittest.mock import MagicMock
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +15,16 @@ from secval.shared_types import (
     SymbolId,
 )
 from secval.web_api import create_search_app
+
+
+def create_zip_file(files: dict[str, bytes]) -> bytes:
+    """创建上传接口测试使用的内存 ZIP。"""
+
+    zip_content = BytesIO()
+    with ZipFile(zip_content, "w", ZIP_DEFLATED) as archive:
+        for relative_path, content in files.items():
+            archive.writestr(relative_path, content)
+    return zip_content.getvalue()
 
 
 def create_runtime() -> MagicMock:
@@ -133,3 +146,222 @@ def test_search_endpoint_rejects_invalid_top_k() -> None:
 
     assert response.status_code == 422
     runtime.search_service.search.assert_not_called()
+
+
+def test_upload_repository_saves_relative_file_paths(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """目录上传应保留源码文件在仓库中的相对路径。"""
+
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload",
+            data={"repository_directory": "sample-project"},
+            files=[
+                (
+                    "files",
+                    ("src/main/App.java", b"class App {}", "text/plain"),
+                ),
+                (
+                    "files",
+                    ("README.md", b"sample", "text/markdown"),
+                ),
+            ],
+        )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "repository_path": "sample-project",
+        "uploaded_files": 2,
+        "uploaded_bytes": 18,
+        "replaced_existing": False,
+    }
+    assert (tmp_path / "sample-project/src/main/App.java").read_bytes() == (
+        b"class App {}"
+    )
+    assert (tmp_path / "sample-project/README.md").read_bytes() == b"sample"
+
+
+def test_upload_repository_does_not_replace_existing_by_default(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """没有明确允许覆盖时，已有仓库内容必须保持不变。"""
+
+    existing_repository = tmp_path / "sample-project"
+    existing_repository.mkdir()
+    existing_file = existing_repository / "App.java"
+    existing_file.write_text("old code", encoding="utf-8")
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload",
+            data={"repository_directory": "sample-project"},
+            files=[
+                ("files", ("App.java", b"new code", "text/plain")),
+            ],
+        )
+
+    assert response.status_code == 409
+    assert existing_file.read_text(encoding="utf-8") == "old code"
+
+
+def test_upload_repository_replaces_existing_when_allowed(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """明确允许替换时，新目录应完整取代旧目录。"""
+
+    existing_repository = tmp_path / "sample-project"
+    existing_repository.mkdir()
+    (existing_repository / "old.java").write_text("old", encoding="utf-8")
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload",
+            data={
+                "repository_directory": "sample-project",
+                "replace_existing": "true",
+            },
+            files=[
+                ("files", ("new.java", b"new", "text/plain")),
+            ],
+        )
+
+    assert response.status_code == 201
+    assert response.json()["replaced_existing"] is True
+    assert not (existing_repository / "old.java").exists()
+    assert (existing_repository / "new.java").read_bytes() == b"new"
+
+
+def test_upload_repository_copies_when_directory_rename_is_denied(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Windows bind mount 拒绝临时目录改名时，应退回逐文件复制。"""
+
+    original_rename = Path.rename
+
+    def deny_temporary_directory_rename(source: Path, target: Path) -> Path:
+        if source.name.startswith(".upload-"):
+            raise PermissionError("bind mount denied directory rename")
+        return original_rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", deny_temporary_directory_rename)
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload",
+            data={"repository_directory": "sample-project"},
+            files=[
+                ("files", ("src/App.java", b"new", "text/plain")),
+            ],
+        )
+
+    assert response.status_code == 201
+    assert (tmp_path / "sample-project/src/App.java").read_bytes() == b"new"
+
+
+def test_upload_repository_rejects_parent_directory_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """文件名中的上级目录不能把文件写出目标仓库。"""
+
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload",
+            data={"repository_directory": "sample-project"},
+            files=[
+                ("files", ("../outside.java", b"bad", "text/plain")),
+            ],
+        )
+
+    assert response.status_code == 400
+    assert not (tmp_path / "outside.java").exists()
+    assert not (tmp_path / "sample-project").exists()
+
+
+def test_upload_zip_removes_single_outer_directory(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """常见的 project/src 结构应去掉压缩包唯一的 project 外层。"""
+
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+    zip_content = create_zip_file(
+        {
+            "downloaded-project/src/App.java": b"class App {}",
+            "downloaded-project/README.md": b"sample",
+        }
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload-zip",
+            data={"repository_directory": "sample-project"},
+            files={"zip_file": ("project.zip", zip_content, "application/zip")},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["uploaded_files"] == 2
+    assert (tmp_path / "sample-project/src/App.java").read_bytes() == (
+        b"class App {}"
+    )
+    assert not (tmp_path / "sample-project/downloaded-project").exists()
+
+
+def test_upload_zip_rejects_parent_directory_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """恶意 ZIP 不能把文件解压到目标仓库外面。"""
+
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+    zip_content = create_zip_file({"../../outside.java": b"bad"})
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload-zip",
+            data={"repository_directory": "sample-project"},
+            files={"zip_file": ("project.zip", zip_content, "application/zip")},
+        )
+
+    assert response.status_code == 400
+    assert not (tmp_path / "outside.java").exists()
+    assert not (tmp_path / "sample-project").exists()
+
+
+def test_upload_zip_rejects_non_zip_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """只有扩展名正确且内容有效的 ZIP 才能进入解压流程。"""
+
+    monkeypatch.setenv("SECVAL_REPOSITORIES_ROOT", str(tmp_path))
+    app = create_search_app(create_runtime())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/repositories/upload-zip",
+            data={"repository_directory": "sample-project"},
+            files={"zip_file": ("project.zip", b"not a zip", "application/zip")},
+        )
+
+    assert response.status_code == 400
+    assert not (tmp_path / "sample-project").exists()

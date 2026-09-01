@@ -7,6 +7,9 @@ from secval.hybrid_search.local_embedding import (
     EMBEDDING_DIMENSION,
     LocalEmbeddingModel,
 )
+from secval.hybrid_search.local_embedding.local_embedding_model import (
+    CODE_EMBEDDING_BATCH_SIZE,
+)
 
 
 @patch(
@@ -30,6 +33,7 @@ def test_embed_code(mock_model_class: MagicMock) -> None:
     assert len(vectors[0]) == EMBEDDING_DIMENSION
     model_instance.encode.assert_called_once_with(
         ["void findUser() {}", "void deleteUser() {}"],
+        batch_size=CODE_EMBEDDING_BATCH_SIZE,
         normalize_embeddings=True,
         convert_to_numpy=True,
         show_progress_bar=False,

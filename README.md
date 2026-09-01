@@ -43,7 +43,18 @@ API 文档：<http://127.0.0.1:8000/docs>
 
 ### 导入代码仓库
 
-把待搜索的仓库放进 `data/repositories`，然后调用建库接口：
+Web 客户端先通过 `POST /api/repositories/upload` 上传代码目录。这个接口使用
+`multipart/form-data`，包含以下字段：
+
+- `repository_directory`：服务端保存使用的目录名；
+- `replace_existing`：是否明确允许替换已有同名目录，默认为 `false`；
+- `files`：一个或多个代码文件，文件名中保留仓库内的相对路径。
+
+上传成功后会返回 `repository_path`。再把这个值交给建库接口：
+
+也可以通过 `POST /api/repositories/upload-zip` 上传单个 ZIP。字段为
+`repository_directory`、`replace_existing` 和 `zip_file`。服务端会检查解压路径、
+文件数量、解压总大小、加密条目和符号链接，并自动去掉唯一的最外层目录。
 
 ```powershell
 $body = @{
@@ -63,6 +74,7 @@ Invoke-RestMethod `
 
 `repository_path` 必须是 `data/repositories` 下的相对路径。API 会拒绝绝对路径和
 越过挂载根目录的路径。同一 API 进程会串行导入，失败批次会从两个存储中回滚。
+上传接口先写临时目录，全部文件保存成功后才替换正式目录；默认不会覆盖已有仓库。
 
 ### 搜索
 

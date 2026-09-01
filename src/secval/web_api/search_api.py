@@ -6,7 +6,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from secval.code_processing.code_models import CodeRepository, CodeSnapshot
@@ -17,6 +26,11 @@ from secval.hybrid_search.search_runtime import (
     create_search_runtime,
 )
 from secval.shared_types import RepositoryId, SnapshotId
+from secval.web_api.repository_upload import (
+    UploadRepositoryResponse,
+    save_uploaded_repository,
+    save_uploaded_zip,
+)
 
 
 class SearchRequest(BaseModel):
@@ -184,6 +198,77 @@ def create_search_app(
             result_count=len(result_responses),
             results=result_responses,
         )
+
+    @app.post(
+        "/api/repositories/upload",
+        response_model=UploadRepositoryResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def upload_code_repository(
+        request: Request,
+        repository_directory: str = Form(min_length=1),
+        replace_existing: bool = Form(default=False),
+        files: list[UploadFile] = File(min_length=1),
+    ) -> UploadRepositoryResponse:
+        """接收浏览器选择的代码目录，并保存到 repositories 根目录。"""
+
+        try:
+            with request.app.state.index_lock:
+                result = save_uploaded_repository(
+                    repository_directory=repository_directory,
+                    uploaded_files=files,
+                    replace_existing=replace_existing,
+                )
+        except FileExistsError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
+        except (ValueError, OSError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(error),
+            ) from error
+        finally:
+            for uploaded_file in files:
+                uploaded_file.file.close()
+
+        return result
+
+    @app.post(
+        "/api/repositories/upload-zip",
+        response_model=UploadRepositoryResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def upload_code_repository_zip(
+        request: Request,
+        repository_directory: str = Form(min_length=1),
+        replace_existing: bool = Form(default=False),
+        zip_file: UploadFile = File(),
+    ) -> UploadRepositoryResponse:
+        """接收 ZIP 代码仓库，安全解压后保存到 repositories 根目录。"""
+
+        try:
+            with request.app.state.index_lock:
+                result = save_uploaded_zip(
+                    repository_directory=repository_directory,
+                    uploaded_zip=zip_file,
+                    replace_existing=replace_existing,
+                )
+        except FileExistsError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
+        except (ValueError, OSError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(error),
+            ) from error
+        finally:
+            zip_file.file.close()
+
+        return result
 
     @app.post(
         "/api/repositories/index",

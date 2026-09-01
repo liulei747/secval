@@ -16,7 +16,8 @@ services:
     volumes:
       - ./config/search.docker.yaml:/app/config/search.yaml:ro
       - huggingface-cache:/models/huggingface
-      - ./data/repositories:/repositories:ro
+      # API 需要把浏览器上传的仓库保存到这个目录。
+      - ./data/repositories:/repositories
     networks:
       - services
     depends_on:

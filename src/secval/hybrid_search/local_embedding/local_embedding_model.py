@@ -9,7 +9,10 @@ from secval.shared_config.search_settings import (
 
 EMBEDDING_MODEL_NAME = SUPPORTED_EMBEDDING_MODEL
 EMBEDDING_DIMENSION = SUPPORTED_EMBEDDING_DIMENSION
-MAX_SEQUENCE_LENGTH = 4096
+MAX_SEQUENCE_LENGTH = 512
+# 显式限制模型批次，兼顾 CPU 处理速度和内存占用。
+# 完整代码仍保存在 OpenSearch；这里只限制用于语义搜索的模型输入。
+CODE_EMBEDDING_BATCH_SIZE = 16
 
 QUERY_INSTRUCTION = (
     "Given a code search query, retrieve the source code that best answers it."
@@ -47,6 +50,7 @@ class LocalEmbeddingModel:
 
         vectors = self.model.encode(
             code_texts,
+            batch_size=CODE_EMBEDDING_BATCH_SIZE,
             normalize_embeddings=True,
             convert_to_numpy=True,
             show_progress_bar=False,

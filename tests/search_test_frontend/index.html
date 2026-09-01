@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secval 搜索联调台</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="top-bar">
+        <div>
+            <p class="eyebrow">SECVAL · SEARCH TEST</p>
+            <h1>搜索联调台</h1>
+            <p class="subtitle">从代码仓库入库，到模拟 LLM 发起混合搜索。</p>
+        </div>
+        <div class="health-panel">
+            <span id="healthDot" class="health-dot"></span>
+            <div>
+                <strong id="healthText">尚未检查</strong>
+                <small>目标 API：<span id="apiAddress"></span></small>
+            </div>
+            <button id="checkHealthButton" class="secondary-button" type="button">
+                检查连接
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <nav class="flow-line" aria-label="测试步骤">
+            <div class="flow-step active"><span>1</span>上传代码</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step"><span>2</span>建立索引</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step"><span>3</span>模拟 LLM 搜索</div>
+        </nav>
+
+        <section class="work-grid">
+            <article class="card">
+                <div class="card-heading">
+                    <div>
+                        <p class="step-label">STEP 01</p>
+                        <h2>上传并导入代码仓库</h2>
+                    </div>
+                    <span class="method-badge">UPLOAD → INDEX</span>
+                </div>
+
+                <p class="help-text">
+                    先从电脑选择代码目录并上传。服务端保存成功后，再读取这个目录并建立搜索索引。
+                </p>
+
+                <div class="endpoint-line">POST /api/repositories/upload</div>
+                <form id="uploadForm">
+                    <div class="field-row">
+                        <label>
+                            仓库 ID
+                            <input id="repositoryId" value="example-project" required>
+                        </label>
+                        <label>
+                            仓库名称
+                            <input id="repositoryName" value="Example Project" required>
+                        </label>
+                    </div>
+                    <label>
+                        服务端仓库目录名
+                        <input id="repositoryPath" value="example-project" required>
+                        <small>上传后会保存到 repositories 根目录下，不是本机绝对路径。</small>
+                    </label>
+                    <label class="folder-picker">
+                        选择本机代码目录
+                        <input id="repositoryFiles" type="file" webkitdirectory directory multiple required>
+                        <small id="selectedFilesText">尚未选择目录。</small>
+                    </label>
+                    <label class="checkbox-label">
+                        <input id="replaceExisting" type="checkbox">
+                        明确允许替换服务端已经上传的同名目录
+                    </label>
+                    <button id="uploadButton" class="primary-button" type="submit">
+                        1A. 上传代码目录
+                    </button>
+                </form>
+
+                <div class="upload-divider"><span>或者上传 ZIP</span></div>
+
+                <form id="zipUploadForm">
+                    <label class="folder-picker">
+                        选择 ZIP 压缩包
+                        <input id="repositoryZip" type="file" accept=".zip,application/zip" required>
+                        <small>ZIP 最大 200 MB，解压后最多 500 MB。</small>
+                    </label>
+                    <button id="zipUploadButton" class="secondary-upload-button" type="submit">
+                        1B. 上传 ZIP 压缩包
+                    </button>
+                </form>
+
+                <div id="uploadStatus" class="status-box empty">
+                    等待选择本机代码目录。
+                </div>
+
+                <div class="endpoint-line second-endpoint">POST /api/repositories/index</div>
+                <form id="indexForm">
+                    <div class="field-row">
+                        <label>
+                            快照 ID
+                            <input id="snapshotId" value="example-project-main" required>
+                        </label>
+                        <label>
+                            版本名称
+                            <input id="version" value="main" required>
+                        </label>
+                    </div>
+                    <button id="indexButton" class="primary-button" type="submit">
+                        2. 建立搜索索引
+                    </button>
+                </form>
+
+                <div id="indexStatus" class="status-box empty">
+                    等待提交入库请求。
+                </div>
+            </article>
+
+            <article class="card">
+                <div class="card-heading">
+                    <div>
+                        <p class="step-label">STEP 03</p>
+                        <h2>模拟 LLM 调用搜索</h2>
+                    </div>
+                    <span class="method-badge">POST /api/search</span>
+                </div>
+
+                <div class="llm-note">
+                    <span>LLM</span>
+                    <p>这里不会调用真实大模型。页面把问题组装成 HTTP 请求，模拟 Agent/LLM 使用搜索工具的过程。</p>
+                </div>
+
+                <form id="searchForm">
+                    <label>
+                        LLM 想查找什么
+                        <textarea id="question" rows="4" required>用户身份认证在哪里实现？</textarea>
+                    </label>
+                    <div class="field-row three-columns">
+                        <label>
+                            返回数量
+                            <input id="topK" type="number" min="1" max="100" value="5" required>
+                        </label>
+                        <label>
+                            语言（可选）
+                            <input id="language" value="java" placeholder="java">
+                        </label>
+                        <label>
+                            代码块类型（可选）
+                            <input id="chunkType" placeholder="method">
+                        </label>
+                    </div>
+                    <label>
+                        路径前缀（可选）
+                        <input id="pathPrefix" placeholder="src/main/">
+                    </label>
+                    <button id="searchButton" class="primary-button" type="submit">
+                        模拟 LLM 搜索
+                    </button>
+                </form>
+
+                <div id="searchStatus" class="status-box empty">
+                    等待 LLM 搜索请求。
+                </div>
+            </article>
+        </section>
+
+        <section class="result-section">
+            <div class="result-heading">
+                <div>
+                    <p class="step-label">STEP 03</p>
+                    <h2>LLM 获得的代码上下文</h2>
+                </div>
+                <div class="view-buttons" role="group" aria-label="结果查看方式">
+                    <button class="view-button active" data-view="cards" type="button">整理结果</button>
+                    <button class="view-button" data-view="json" type="button">原始 JSON</button>
+                </div>
+            </div>
+
+            <div id="resultSummary" class="result-summary">
+                    还没有搜索结果。上传并建立索引后，在上方模拟一次 LLM 搜索。
+            </div>
+            <div id="resultCards" class="result-list"></div>
+            <pre id="rawJson" class="raw-json hidden"></pre>
+        </section>
+    </main>
+
+    <template id="resultTemplate">
+        <article class="result-card">
+            <div class="result-card-head">
+                <div>
+                    <span class="rank"></span>
+                    <strong class="symbol-name"></strong>
+                </div>
+                <span class="score"></span>
+            </div>
+            <p class="file-location"></p>
+            <pre><code class="code-content"></code></pre>
+            <div class="score-row">
+                <span class="keyword-score"></span>
+                <span class="vector-score"></span>
+                <span class="chunk-type"></span>
+            </div>
+        </article>
+    </template>
+
+    <script src="app.js"></script>
+</body>
+</html>

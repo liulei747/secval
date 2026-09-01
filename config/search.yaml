@@ -15,7 +15,7 @@ embedding:
   # 没有明确配置和验证 GPU 前，默认使用 CPU，保证行为可预期。
   device: cpu
   # 控制单次代码文本的最大 Token 数，降低超长方法的内存占用。
-  max_sequence_length: 4096
+  max_sequence_length: 512
 
 fusion:
   # 每一路多召回候选，再由 RRF 合并为用户要求的 Top K。
