@@ -12,4 +12,6 @@ Requires-Dist: tree-sitter==0.26.0
 Requires-Dist: tree-sitter-java==0.23.5
 Requires-Dist: uvicorn==0.52.4
 Provides-Extra: dev
+Requires-Dist: httpx2==2.12.0; extra == "dev"
 Requires-Dist: pytest==9.1.1; extra == "dev"
+Requires-Dist: ruff==0.16.5; extra == "dev"

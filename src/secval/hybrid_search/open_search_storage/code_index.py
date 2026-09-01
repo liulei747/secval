@@ -2,8 +2,7 @@
 
 from opensearchpy import OpenSearch
 
-
-CODE_INDEX_NAME = "secval-code-chunks-v3"
+CODE_INDEX_NAME = "secval-code-chunks-v5"
 
 
 CODE_INDEX_BODY = {
@@ -12,6 +11,38 @@ CODE_INDEX_BODY = {
         "number_of_shards": 1,
         # 单节点无法保存副本，所以开发环境将副本数设为零。
         "number_of_replicas": 0,
+        "analysis": {
+            "char_filter": {
+                "acronym_boundary": {
+                    "type": "pattern_replace",
+                    "pattern": "([A-Z]+)([A-Z][a-z])",
+                    "replacement": "$1 $2",
+                },
+                "camel_boundary": {
+                    "type": "pattern_replace",
+                    "pattern": "([a-z0-9])([A-Z])",
+                    "replacement": "$1 $2",
+                },
+            },
+            "filter": {
+                "code_parts": {
+                    "type": "word_delimiter_graph",
+                    "preserve_original": True,
+                    "split_on_case_change": True,
+                    "split_on_numerics": True,
+                    "catenate_words": True,
+                    "catenate_numbers": True,
+                },
+            },
+            "analyzer": {
+                "code_analyzer": {
+                    "type": "custom",
+                    "char_filter": ["acronym_boundary", "camel_boundary"],
+                    "tokenizer": "whitespace",
+                    "filter": ["code_parts", "lowercase"],
+                },
+            },
+        },
     },
     "mappings": {
         # 拒绝未定义字段，尽早发现字段名拼写错误。
@@ -27,16 +58,17 @@ CODE_INDEX_BODY = {
             "language": {"type": "keyword"},
             "chunk_type": {"type": "keyword"},
             "content": {"type": "text"},
-            # 保存经过代码分词器处理的文本，让 user 可以匹配 findUser。
+            # OpenSearch 自己拆分 camelCase、snake_case、数字和代码符号。
             "search_text": {
                 "type": "text",
-                "analyzer": "whitespace",
+                "analyzer": "code_analyzer",
             },
             "start_line": {"type": "integer"},
             "end_line": {"type": "integer"},
             "symbol_id": {"type": "keyword"},
             "symbol_name": {
                 "type": "text",
+                "analyzer": "code_analyzer",
                 "fields": {
                     "exact": {"type": "keyword"},
                 },

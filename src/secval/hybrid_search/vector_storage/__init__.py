@@ -5,6 +5,7 @@ from .qdrant_code_storage import (
     create_code_vector_collection,
     create_qdrant_connection,
     create_vector_point_id,
+    delete_code_vectors_by_run,
     delete_old_code_vectors,
     save_code_vectors,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "create_code_vector_collection",
     "create_qdrant_connection",
     "create_vector_point_id",
+    "delete_code_vectors_by_run",
     "delete_old_code_vectors",
     "save_code_vectors",
 ]

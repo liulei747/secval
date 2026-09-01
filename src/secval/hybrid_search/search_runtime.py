@@ -7,10 +7,14 @@ from qdrant_client import QdrantClient
 
 from secval.hybrid_search.local_embedding import LocalEmbeddingModel
 from secval.hybrid_search.open_search_storage import (
+    create_code_index,
     create_open_search_connection,
 )
 from secval.hybrid_search.search_service import SearchService
-from secval.hybrid_search.vector_storage import create_qdrant_connection
+from secval.hybrid_search.vector_storage import (
+    create_code_vector_collection,
+    create_qdrant_connection,
+)
 from secval.shared_config import SearchSettings, load_search_settings
 
 
@@ -39,6 +43,9 @@ def create_search_runtime(
         host=settings.qdrant.host,
         port=settings.qdrant.port,
     )
+    # 搜索 API 即使尚未导入仓库，也应该返回空结果而不是索引不存在错误。
+    create_code_index(open_search_connection)
+    create_code_vector_collection(qdrant_client)
     embedding_model = LocalEmbeddingModel(
         model_name=settings.embedding.model_name,
         device=settings.embedding.device,

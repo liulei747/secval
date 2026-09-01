@@ -48,9 +48,7 @@ def test_convert_code_chunk_to_document() -> None:
         "language": "java",
         "chunk_type": "method",
         "content": "public User findUser() { return user; }",
-        "search_text": (
-            "finduser find user public user finduser find user return user"
-        ),
+        "search_text": "findUser public User findUser() { return user; }",
         "start_line": 10,
         "end_line": 12,
         "symbol_id": "symbol-1",

@@ -3,7 +3,6 @@
 import os
 from pathlib import Path
 
-
 # 这些目录通常不包含需要建立索引的项目源代码。
 IGNORED_DIRECTORIES = {
     ".git",

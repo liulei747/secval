@@ -46,12 +46,9 @@ def search_by_keywords(
 def build_keyword_search_body(query: SearchQuery) -> dict[str, Any]:
     """把 SearchQuery 转换成 OpenSearch 查询结构。"""
 
-    query_tokens = tokenize_code(query.text)
-
-    if len(query_tokens) == 0:
+    # 这里只判断是否含有可搜索内容；实际拆词全部交给 OpenSearch analyzer。
+    if len(tokenize_code(query.text)) == 0:
         raise ValueError("搜索文本不包含可以搜索的文字或数字")
-
-    searchable_text = " ".join(query_tokens)
 
     filters: list[dict[str, Any]] = [
         {"terms": {"repository_id": list(query.repository_ids)}},
@@ -73,8 +70,9 @@ def build_keyword_search_body(query: SearchQuery) -> dict[str, Any]:
             "bool": {
                 "must": {
                     "multi_match": {
-                        "query": searchable_text,
+                        "query": query.text,
                         "fields": ["symbol_name^2", "search_text"],
+                        "analyzer": "code_analyzer",
                     }
                 },
                 "filter": filters,

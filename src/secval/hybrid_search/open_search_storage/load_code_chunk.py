@@ -5,6 +5,7 @@ from typing import Any
 from opensearchpy import OpenSearch
 
 from secval.code_processing.code_models import CodeChunk
+from secval.hybrid_search.open_search_storage.code_index import CODE_INDEX_NAME
 from secval.shared_types import (
     ChunkId,
     FileId,
@@ -12,7 +13,6 @@ from secval.shared_types import (
     SnapshotId,
     SymbolId,
 )
-from secval.hybrid_search.open_search_storage.code_index import CODE_INDEX_NAME
 
 
 def document_to_code_chunk(document: dict[str, Any]) -> CodeChunk:

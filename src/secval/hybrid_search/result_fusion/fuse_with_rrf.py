@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from secval.code_processing.code_models import CodeChunk
 from secval.hybrid_search.search_models import SearchResult
 
-
 RRF_RANK_CONSTANT = 60
 
 

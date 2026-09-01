@@ -6,7 +6,6 @@ from typing import Any
 
 import yaml
 
-
 SUPPORTED_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 SUPPORTED_EMBEDDING_DIMENSION = 1024
 

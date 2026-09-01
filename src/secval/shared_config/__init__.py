@@ -1,5 +1,4 @@
 """多个 Secval 板块共同使用的配置。"""
-"""多个 Secval 板块共同使用的配置。"""
 
 from .search_settings import (
     EmbeddingSettings,

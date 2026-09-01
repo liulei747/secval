@@ -11,6 +11,8 @@ from secval.shared_config import (
 
 @patch("secval.hybrid_search.search_runtime.SearchService")
 @patch("secval.hybrid_search.search_runtime.LocalEmbeddingModel")
+@patch("secval.hybrid_search.search_runtime.create_code_vector_collection")
+@patch("secval.hybrid_search.search_runtime.create_code_index")
 @patch("secval.hybrid_search.search_runtime.create_qdrant_connection")
 @patch("secval.hybrid_search.search_runtime.create_open_search_connection")
 @patch("secval.hybrid_search.search_runtime.load_search_settings")
@@ -18,6 +20,8 @@ def test_create_all_runtime_objects_from_settings(
     mock_load_settings: MagicMock,
     mock_create_open_search: MagicMock,
     mock_create_qdrant: MagicMock,
+    mock_create_code_index: MagicMock,
+    mock_create_vector_collection: MagicMock,
     mock_embedding_model_class: MagicMock,
     mock_search_service_class: MagicMock,
 ) -> None:
@@ -56,6 +60,8 @@ def test_create_all_runtime_objects_from_settings(
         host="qdrant-host",
         port=6335,
     )
+    mock_create_code_index.assert_called_once_with(open_search)
+    mock_create_vector_collection.assert_called_once_with(qdrant)
     mock_embedding_model_class.assert_called_once_with(
         model_name="Qwen/Qwen3-Embedding-0.6B",
         device="cpu",

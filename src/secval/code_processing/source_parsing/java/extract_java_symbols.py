@@ -40,8 +40,6 @@ def extract_java_symbols(
 
 def _visit_node(
     node: Node,
-
-    
     source_file: SourceFile,
     source_bytes: bytes,
     package_name: str,

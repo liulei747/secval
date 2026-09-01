@@ -6,7 +6,6 @@
 
 from typing import NewType
 
-
 RepositoryId = NewType("RepositoryId", str)
 """标识一个已经登记的源代码仓库。"""
 

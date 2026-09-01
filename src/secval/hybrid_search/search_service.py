@@ -9,7 +9,6 @@ from secval.hybrid_search.result_fusion import fuse_with_rrf
 from secval.hybrid_search.search_models import SearchQuery, SearchResult
 from secval.hybrid_search.vector_search import search_by_vector
 
-
 FUSION_CANDIDATE_MULTIPLIER = 3
 MAX_CANDIDATE_COUNT = 100
 

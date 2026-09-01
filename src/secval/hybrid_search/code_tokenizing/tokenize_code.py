@@ -2,7 +2,6 @@
 
 import re
 
-
 # 找出英文标识符、独立数字和连续中文文本。
 TEXT_PART_PATTERN = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[\u4e00-\u9fff]+"

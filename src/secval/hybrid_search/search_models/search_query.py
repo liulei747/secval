@@ -47,15 +47,12 @@ class SearchQuery:
         if self.top_k > 100:
             raise ValueError("搜索结果数量不能大于 100")
 
-        if self.language is not None:
-            if not self.language.strip():
-                raise ValueError("编程语言过滤条件不能为空字符串")
+        if self.language is not None and not self.language.strip():
+            raise ValueError("编程语言过滤条件不能为空字符串")
 
-        if self.path_prefix is not None:
-            if not self.path_prefix.strip():
-                raise ValueError("文件路径过滤条件不能为空字符串")
+        if self.path_prefix is not None and not self.path_prefix.strip():
+            raise ValueError("文件路径过滤条件不能为空字符串")
 
-        if self.chunk_type is not None:
-            if not self.chunk_type.strip():
-                raise ValueError("代码块类型过滤条件不能为空字符串")
+        if self.chunk_type is not None and not self.chunk_type.strip():
+            raise ValueError("代码块类型过滤条件不能为空字符串")
 

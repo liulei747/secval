@@ -1,6 +1,39 @@
 name: secval
 
 services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: secval-api
+    environment:
+      - HF_HOME=/models/huggingface
+      - HF_HUB_DISABLE_XET=1
+      - PYTHONUNBUFFERED=1
+      - SECVAL_REPOSITORIES_ROOT=/repositories
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./config/search.docker.yaml:/app/config/search.yaml:ro
+      - huggingface-cache:/models/huggingface
+      - ./data/repositories:/repositories:ro
+    networks:
+      - services
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl --silent --fail http://localhost:8000/api/health || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 15m
+
   opensearch:
     image: opensearchproject/opensearch:3.8.0
     container_name: secval-opensearch
@@ -52,6 +85,7 @@ services:
 volumes:
   opensearch-data:
   qdrant-data:
+  huggingface-cache:
 
 networks:
   services:

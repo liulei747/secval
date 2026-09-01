@@ -61,7 +61,9 @@ class CodeSymbol:
         if self.end_line < self.start_line:
             raise ValueError("符号结束行号不能小于开始行号")
 
-        if self.parent_symbol_id is not None:
-            if not self.parent_symbol_id.strip():
-                raise ValueError("上级符号 ID 不能为空字符串")
+        if (
+            self.parent_symbol_id is not None
+            and not self.parent_symbol_id.strip()
+        ):
+            raise ValueError("上级符号 ID 不能为空字符串")
 

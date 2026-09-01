@@ -1,0 +1,17 @@
+open_search:
+  host: opensearch
+  port: 9200
+
+qdrant:
+  host: qdrant
+  port: 6333
+
+embedding:
+  model_name: Qwen/Qwen3-Embedding-0.6B
+  dimension: 1024
+  device: cpu
+  max_sequence_length: 4096
+
+fusion:
+  candidate_multiplier: 3
+  max_candidate_count: 100

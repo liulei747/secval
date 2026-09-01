@@ -9,7 +9,6 @@ from secval.code_processing.code_models import CodeChunk
 from secval.hybrid_search.local_embedding import EMBEDDING_DIMENSION
 from secval.shared_types import ChunkId, RepositoryId, SnapshotId
 
-
 CODE_VECTOR_COLLECTION = "secval-code-vectors-qwen3-06b-v1"
 
 
@@ -145,6 +144,29 @@ def delete_old_code_vectors(
     client.delete(
         collection_name=CODE_VECTOR_COLLECTION,
         points_selector=old_vectors_filter,
+        wait=True,
+    )
+
+
+def delete_code_vectors_by_run(
+    client: QdrantClient,
+    index_run_id: str,
+) -> None:
+    """删除指定未完成批次的向量，用于写入失败后的回滚。"""
+
+    if not index_run_id.strip():
+        raise ValueError("索引批次 ID 不能为空")
+
+    client.delete(
+        collection_name=CODE_VECTOR_COLLECTION,
+        points_selector=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="index_run_id",
+                    match=models.MatchValue(value=index_run_id),
+                )
+            ]
+        ),
         wait=True,
     )
 

@@ -20,7 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "httpx2==2.12.0",
     "pytest==9.1.1",
+    "ruff==0.16.5",
 ]
 
 [tool.setuptools.packages.find]
@@ -29,3 +31,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Windows bind mounts会把普通 Python 文件呈现为可执行；配置格式错误统一对外报告 ValueError。
+ignore = ["EXE002", "TRY004"]
+
+[tool.ruff.lint.per-file-ignores]
+# 健康检查是故障边界：任何客户端异常都应转换成 503，而不是让检查本身崩溃。
+"src/secval/web_api/search_api.py" = ["BLE001"]

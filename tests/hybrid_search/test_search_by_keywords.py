@@ -30,7 +30,8 @@ def test_build_keyword_search_body() -> None:
     filters = search_body["query"]["bool"]["filter"]
 
     assert search_body["size"] == 5
-    assert multi_match["query"] == "finduser find user"
+    assert multi_match["query"] == "findUser"
+    assert multi_match["analyzer"] == "code_analyzer"
     assert multi_match["fields"] == ["symbol_name^2", "search_text"]
     assert {"terms": {"repository_id": ["repository-1"]}} in filters
     assert {"terms": {"snapshot_id": ["snapshot-1"]}} in filters

@@ -1,11 +1,16 @@
 """提供搜索板块的 HTTP API。"""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
+from threading import Lock
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
+from secval.code_processing.code_models import CodeRepository, CodeSnapshot
+from secval.hybrid_search.search_indexing import index_repository
 from secval.hybrid_search.search_models import SearchQuery, SearchResult
 from secval.hybrid_search.search_runtime import (
     SearchRuntime,
@@ -54,6 +59,33 @@ class SearchResponse(BaseModel):
     results: list[SearchResultResponse]
 
 
+class IndexRepositoryRequest(BaseModel):
+    """导入挂载在 repositories 根目录下的一个代码仓库。"""
+
+    repository_id: str = Field(min_length=1)
+    repository_name: str = Field(min_length=1)
+    repository_path: str = Field(min_length=1)
+    snapshot_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+
+
+class FileErrorResponse(BaseModel):
+    relative_path: str
+    message: str
+
+
+class IndexRepositoryResponse(BaseModel):
+    index_run_id: str
+    total_files: int
+    successful_files: int
+    failed_files: int
+    generated_chunks: int
+    saved_chunks: int
+    saved_vectors: int
+    deleted_chunks: int
+    errors: list[FileErrorResponse]
+
+
 class HealthResponse(BaseModel):
     """搜索服务及两个存储的健康状态。"""
 
@@ -77,6 +109,7 @@ def create_search_app(
             active_runtime = create_search_runtime()
 
         app.state.search_runtime = active_runtime
+        app.state.index_lock = Lock()
         yield
 
         if owns_runtime:
@@ -150,6 +183,69 @@ def create_search_app(
             results=result_responses,
         )
 
+    @app.post(
+        "/api/repositories/index",
+        response_model=IndexRepositoryResponse,
+    )
+    def index_code_repository(
+        index_request: IndexRepositoryRequest,
+        request: Request,
+    ) -> IndexRepositoryResponse:
+        """处理一个已挂载仓库，并原子式替换它当前快照的搜索数据。"""
+
+        active_runtime: SearchRuntime = request.app.state.search_runtime
+
+        try:
+            repository_root = _resolve_repository_path(
+                index_request.repository_path
+            )
+            repository = CodeRepository(
+                repository_id=RepositoryId(index_request.repository_id),
+                name=index_request.repository_name,
+                root_path=str(repository_root),
+            )
+            snapshot = CodeSnapshot(
+                snapshot_id=SnapshotId(index_request.snapshot_id),
+                repository_id=repository.repository_id,
+                version=index_request.version,
+            )
+
+            # 同一进程一次只执行一个导入，避免两个批次交叉清理数据。
+            with request.app.state.index_lock:
+                result = index_repository(
+                    open_search_connection=(
+                        active_runtime.open_search_connection
+                    ),
+                    qdrant_client=active_runtime.qdrant_client,
+                    embedding_model=active_runtime.embedding_model,
+                    repository=repository,
+                    snapshot=snapshot,
+                )
+        except (ValueError, OSError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(error),
+            ) from error
+
+        process_result = result.process_result
+        return IndexRepositoryResponse(
+            index_run_id=result.index_run_id,
+            total_files=process_result.total_files,
+            successful_files=process_result.successful_files,
+            failed_files=len(process_result.errors),
+            generated_chunks=len(process_result.chunks),
+            saved_chunks=result.saved_chunks,
+            saved_vectors=result.saved_vectors,
+            deleted_chunks=result.deleted_chunks,
+            errors=[
+                FileErrorResponse(
+                    relative_path=error.relative_path,
+                    message=error.message,
+                )
+                for error in process_result.errors
+            ],
+        )
+
     return app
 
 
@@ -169,6 +265,27 @@ def _create_search_query(search_request: SearchRequest) -> SearchQuery:
         path_prefix=search_request.path_prefix,
         chunk_type=search_request.chunk_type,
     )
+
+
+def _resolve_repository_path(repository_path: str) -> Path:
+    """安全解析容器内 repositories 根目录下的相对路径。"""
+
+    relative_path = Path(repository_path.strip())
+    if relative_path.is_absolute():
+        raise ValueError("仓库路径必须是 repositories 根目录下的相对路径")
+
+    repositories_root = Path(
+        os.getenv("SECVAL_REPOSITORIES_ROOT", "/repositories")
+    ).resolve()
+    resolved_path = (repositories_root / relative_path).resolve()
+
+    if not resolved_path.is_relative_to(repositories_root):
+        raise ValueError("仓库路径不能超出 repositories 根目录")
+
+    if not resolved_path.is_dir():
+        raise ValueError(f"仓库目录不存在：{repository_path}")
+
+    return resolved_path
 
 
 def _create_result_response(result: SearchResult) -> SearchResultResponse:

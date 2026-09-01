@@ -20,13 +20,68 @@ Neo4j、Joern、Agent 和 MCP 暂未创建。
 
 当前服务：
 
+- `secval-api`：FastAPI 搜索接口，仅监听本机 `127.0.0.1:8000`。
 - `secval-opensearch`：单节点 OpenSearch，仅监听本机 `127.0.0.1:9200`。
+- `secval-qdrant`：Qdrant 向量数据库，仅监听本机 `127.0.0.1:6333` 和 `127.0.0.1:6334`。
 
 启动：
 
 ```powershell
-docker compose up -d opensearch
+docker compose up -d --build
 ```
+
+首次启动 API 会下载 Qwen Embedding 模型，完成时间取决于网络。模型保存在
+Docker 的 `huggingface-cache` volume 中，后续重启会复用缓存。
+
+健康检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/health
+```
+
+API 文档：<http://127.0.0.1:8000/docs>
+
+### 导入代码仓库
+
+把待搜索的仓库放进 `data/repositories`，然后调用建库接口：
+
+```powershell
+$body = @{
+    repository_id = "example-project"
+    repository_name = "Example Project"
+    repository_path = "example-project"
+    snapshot_id = "example-project-main"
+    version = "main"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri http://127.0.0.1:8000/api/repositories/index `
+    -ContentType application/json `
+    -Body $body
+```
+
+`repository_path` 必须是 `data/repositories` 下的相对路径。API 会拒绝绝对路径和
+越过挂载根目录的路径。同一 API 进程会串行导入，失败批次会从两个存储中回滚。
+
+### 搜索
+
+```powershell
+$body = @{
+    text = "find user"
+    repository_ids = @("example-project")
+    snapshot_ids = @("example-project-main")
+    top_k = 10
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri http://127.0.0.1:8000/api/search `
+    -ContentType application/json `
+    -Body $body
+```
+
+代码标识符的大小写、下划线和数字拆分由 OpenSearch 的 `code_analyzer` 完成。
 
 查看状态：
 

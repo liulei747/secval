@@ -62,3 +62,4 @@ src/secval/shared_types/__init__.py
 src/secval/shared_types/create_resource_ids.py
 src/secval/shared_types/resource_ids.py
 src/secval/web_api/__init__.py
+src/secval/web_api/search_api.py

@@ -1,5 +1,6 @@
 """处理代码仓库并建立关键词搜索索引。"""
 
+import logging
 from uuid import uuid4
 
 from opensearchpy import OpenSearch
@@ -14,6 +15,7 @@ from secval.code_processing.repository_processing import process_repository
 from secval.hybrid_search.local_embedding import LocalEmbeddingModel
 from secval.hybrid_search.open_search_storage.code_index import create_code_index
 from secval.hybrid_search.open_search_storage.delete_old_code_chunks import (
+    delete_code_chunks_by_run,
     delete_old_code_chunks,
 )
 from secval.hybrid_search.open_search_storage.save_code_chunks import (
@@ -24,9 +26,12 @@ from secval.hybrid_search.search_indexing.repository_index_result import (
 )
 from secval.hybrid_search.vector_storage import (
     create_code_vector_collection,
+    delete_code_vectors_by_run,
     delete_old_code_vectors,
     save_code_vectors,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def index_repository(
@@ -54,17 +59,29 @@ def index_repository(
     embedding_texts = _create_embedding_texts(process_result.chunks)
     vectors = embedding_model.embed_code(embedding_texts)
 
-    saved_chunks = save_code_chunks(
-        connection=open_search_connection,
-        code_chunks=process_result.chunks,
-        index_run_id=index_run_id,
-    )
-    saved_vectors = save_code_vectors(
-        client=qdrant_client,
-        code_chunks=process_result.chunks,
-        vectors=vectors,
-        index_run_id=index_run_id,
-    )
+    try:
+        saved_chunks = save_code_chunks(
+            connection=open_search_connection,
+            code_chunks=process_result.chunks,
+            index_run_id=index_run_id,
+        )
+        saved_vectors = save_code_vectors(
+            client=qdrant_client,
+            code_chunks=process_result.chunks,
+            vectors=vectors,
+            index_run_id=index_run_id,
+        )
+    except Exception:
+        # 两个存储没有跨库事务；失败时尽最大努力清掉本批次残留。
+        try:
+            delete_code_chunks_by_run(open_search_connection, index_run_id)
+        except Exception:
+            logger.exception("回滚 OpenSearch 索引批次失败：%s", index_run_id)
+        try:
+            delete_code_vectors_by_run(qdrant_client, index_run_id)
+        except Exception:
+            logger.exception("回滚 Qdrant 索引批次失败：%s", index_run_id)
+        raise
 
     # 只有两个存储的新数据全部写入成功后，才开始清理旧批次。
     deleted_chunks = delete_old_code_chunks(
