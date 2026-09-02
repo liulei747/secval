@@ -29,6 +29,7 @@ def test_create_all_runtime_objects_from_settings(
         open_search=ServiceAddress("open-search-host", 9201),
         qdrant=ServiceAddress("qdrant-host", 6335),
         embedding=EmbeddingSettings(
+            provider="local",
             model_name="Qwen/Qwen3-Embedding-0.6B",
             dimension=1024,
             device="cpu",

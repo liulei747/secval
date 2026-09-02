@@ -11,6 +11,7 @@ def test_load_default_search_settings() -> None:
     assert settings.open_search.host == "127.0.0.1"
     assert settings.open_search.port == 9200
     assert settings.qdrant.port == 6333
+    assert settings.embedding.provider == "local"
     assert settings.embedding.model_name == "Qwen/Qwen3-Embedding-0.6B"
     assert settings.embedding.dimension == 1024
     assert settings.embedding.device == "cpu"

@@ -8,6 +8,7 @@ import yaml
 
 SUPPORTED_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 SUPPORTED_EMBEDDING_DIMENSION = 1024
+SUPPORTED_EMBEDDING_PROVIDERS = {"local", "api"}
 
 
 @dataclass
@@ -27,15 +28,25 @@ class ServiceAddress:
 
 @dataclass
 class EmbeddingSettings:
-    """本地 Embedding 模型配置。"""
+    """本地或远程 API Embedding 配置。"""
 
+    provider: str
     model_name: str
     dimension: int
     device: str
     max_sequence_length: int
 
     def __post_init__(self) -> None:
-        if self.model_name != SUPPORTED_EMBEDDING_MODEL:
+        if self.provider not in SUPPORTED_EMBEDDING_PROVIDERS:
+            raise ValueError("Embedding provider 只能是 local 或 api")
+
+        if not self.model_name.strip():
+            raise ValueError("Embedding 模型名称不能为空")
+
+        if (
+            self.provider == "local"
+            and self.model_name != SUPPORTED_EMBEDDING_MODEL
+        ):
             raise ValueError(
                 "当前向量 Collection 只支持模型："
                 f"{SUPPORTED_EMBEDDING_MODEL}"
@@ -105,6 +116,7 @@ def load_search_settings(
     fusion_data = _read_section(raw_settings, "fusion")
 
     try:
+        provider = str(embedding_data.get("provider", "local"))
         model_name = str(embedding_data["model_name"])
         dimension = int(embedding_data["dimension"])
         device = str(embedding_data["device"])
@@ -117,6 +129,7 @@ def load_search_settings(
         raise ValueError("搜索配置缺少字段或字段类型错误") from error
 
     embedding = EmbeddingSettings(
+        provider=provider,
         model_name=model_name,
         dimension=dimension,
         device=device,

@@ -25,6 +25,7 @@ from secval.hybrid_search.search_runtime import (
     SearchRuntime,
     create_search_runtime,
 )
+from secval.hybrid_search.vector_storage import CODE_VECTOR_COLLECTION
 from secval.shared_types import RepositoryId, SnapshotId
 from secval.web_api.repository_upload import (
     UploadRepositoryResponse,
@@ -108,6 +109,9 @@ class HealthResponse(BaseModel):
     status: str
     open_search: str
     qdrant: str
+    embedding_provider: str
+    embedding_model: str
+    vector_collection: str
 
 
 def create_search_app(
@@ -171,6 +175,9 @@ def create_search_app(
             status=service_status,
             open_search=open_search_status,
             qdrant=qdrant_status,
+            embedding_provider=active_runtime.embedding_model.provider_name,
+            embedding_model=active_runtime.embedding_model.model_name,
+            vector_collection=CODE_VECTOR_COLLECTION,
         )
 
     @app.post("/api/search", response_model=SearchResponse)

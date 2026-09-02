@@ -22,6 +22,8 @@ QUERY_INSTRUCTION = (
 class LocalEmbeddingModel:
     """加载一次本地模型，并重复生成代码和查询向量。"""
 
+    provider_name = "local"
+
     def __init__(
         self,
         device: str = "cpu",
@@ -36,6 +38,7 @@ class LocalEmbeddingModel:
             device=device,
         )
         self.model.max_seq_length = max_sequence_length
+        self.model_name = model_name
         self.expected_dimension = expected_dimension
 
     def embed_code(self, code_texts: list[str]) -> list[list[float]]:

@@ -26,13 +26,20 @@ def create_search_query() -> SearchQuery:
 def test_build_keyword_search_body() -> None:
     search_body = build_keyword_search_body(create_search_query())
 
-    multi_match = search_body["query"]["bool"]["must"]["multi_match"]
+    lexical_queries = search_body["query"]["bool"]["must"]["bool"]
+    multi_match = lexical_queries["should"][0]["multi_match"]
+    content_match = lexical_queries["should"][1]["match"]["content"]
     filters = search_body["query"]["bool"]["filter"]
 
     assert search_body["size"] == 5
     assert multi_match["query"] == "findUser"
     assert multi_match["analyzer"] == "code_analyzer"
     assert multi_match["fields"] == ["symbol_name^2", "search_text"]
+    assert lexical_queries["minimum_should_match"] == 1
+    assert content_match == {
+        "query": "findUser",
+        "minimum_should_match": "60%",
+    }
     assert {"terms": {"repository_id": ["repository-1"]}} in filters
     assert {"terms": {"snapshot_id": ["snapshot-1"]}} in filters
     assert {"term": {"language": "java"}} in filters

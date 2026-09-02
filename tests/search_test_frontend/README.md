@@ -36,6 +36,10 @@ BM25 + 向量搜索 → RRF 合并
 模拟 LLM 收到 CodeChunk 搜索结果
 ```
 
+测试页面不直接接触 Embedding API Key。点击“建立搜索索引”和“模拟 LLM 搜索”时，
+Secval API 会根据服务端 `.env` 选择本地模型或远程
+`qwen3.7-text-embedding`，因此上传、索引、查询的页面流程不需要改变。
+
 ## 使用方法
 
 这个命令只启动测试页面，不会启动 Docker：

@@ -40,7 +40,10 @@ async function checkHealth() {
         ensureSuccessfulResponse(response, body);
 
         healthDot.className = "health-dot success";
-        healthText.textContent = `服务正常 · OpenSearch ${body.open_search} · Qdrant ${body.qdrant}`;
+        healthText.textContent = [
+            `服务正常 · OpenSearch ${body.open_search} · Qdrant ${body.qdrant}`,
+            `Embedding ${body.embedding_provider} · ${body.embedding_model}`,
+        ].join(" · ");
     } catch (error) {
         healthDot.className = "health-dot error";
         healthText.textContent = `连接失败：${error.message}`;

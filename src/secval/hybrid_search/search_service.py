@@ -4,7 +4,7 @@ from opensearchpy import OpenSearch
 from qdrant_client import QdrantClient
 
 from secval.hybrid_search.keyword_search import search_by_keywords
-from secval.hybrid_search.local_embedding import LocalEmbeddingModel
+from secval.hybrid_search.local_embedding import EmbeddingModel
 from secval.hybrid_search.result_fusion import fuse_with_rrf
 from secval.hybrid_search.search_models import SearchQuery, SearchResult
 from secval.hybrid_search.vector_search import search_by_vector
@@ -20,7 +20,7 @@ class SearchService:
         self,
         open_search_connection: OpenSearch,
         qdrant_client: QdrantClient,
-        embedding_model: LocalEmbeddingModel,
+        embedding_model: EmbeddingModel,
         candidate_multiplier: int = FUSION_CANDIDATE_MULTIPLIER,
         max_candidate_count: int = MAX_CANDIDATE_COUNT,
     ) -> None:

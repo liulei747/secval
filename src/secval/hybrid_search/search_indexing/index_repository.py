@@ -13,7 +13,7 @@ from secval.code_processing.code_models import (
     require_unique_chunk_ids,
 )
 from secval.code_processing.repository_processing import process_repository
-from secval.hybrid_search.local_embedding import LocalEmbeddingModel
+from secval.hybrid_search.local_embedding import EmbeddingModel
 from secval.hybrid_search.open_search_storage.code_index import create_code_index
 from secval.hybrid_search.open_search_storage.delete_old_code_chunks import (
     delete_code_chunks_by_run,
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 def index_repository(
     open_search_connection: OpenSearch,
     qdrant_client: QdrantClient,
-    embedding_model: LocalEmbeddingModel,
+    embedding_model: EmbeddingModel,
     repository: CodeRepository,
     snapshot: CodeSnapshot,
 ) -> RepositoryIndexResult:

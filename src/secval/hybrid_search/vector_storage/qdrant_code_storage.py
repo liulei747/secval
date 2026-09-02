@@ -1,5 +1,6 @@
 """使用 Qdrant 保存代码向量。"""
 
+import os
 from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client import QdrantClient
@@ -12,7 +13,10 @@ from secval.code_processing.code_models import (
 from secval.hybrid_search.local_embedding import EMBEDDING_DIMENSION
 from secval.shared_types import ChunkId, RepositoryId, SnapshotId
 
-CODE_VECTOR_COLLECTION = "secval-code-vectors-qwen3-06b-v2"
+CODE_VECTOR_COLLECTION = os.getenv(
+    "SECVAL_VECTOR_COLLECTION",
+    "secval-code-vectors-qwen3-06b-v2",
+)
 
 
 def create_qdrant_connection(

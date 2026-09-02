@@ -7,6 +7,8 @@ qdrant:
   port: 6333
 
 embedding:
+  # 可用 SECVAL_EMBEDDING_PROVIDER=api 覆盖为远程 Embedding API。
+  provider: local
   model_name: Qwen/Qwen3-Embedding-0.6B
   dimension: 1024
   device: cpu

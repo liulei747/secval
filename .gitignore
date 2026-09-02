@@ -8,3 +8,5 @@ venv/
 .env
 build/
 data/
+tests/
+.tests/

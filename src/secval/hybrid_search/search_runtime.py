@@ -1,11 +1,16 @@
 """根据统一配置创建搜索运行环境。"""
 
+import os
 from dataclasses import dataclass
 
 from opensearchpy import OpenSearch
 from qdrant_client import QdrantClient
 
-from secval.hybrid_search.local_embedding import LocalEmbeddingModel
+from secval.hybrid_search.local_embedding import (
+    ApiEmbeddingModel,
+    EmbeddingModel,
+    LocalEmbeddingModel,
+)
 from secval.hybrid_search.open_search_storage import (
     create_code_index,
     create_open_search_connection,
@@ -25,7 +30,7 @@ class SearchRuntime:
     settings: SearchSettings
     open_search_connection: OpenSearch
     qdrant_client: QdrantClient
-    embedding_model: LocalEmbeddingModel
+    embedding_model: EmbeddingModel
     search_service: SearchService
 
 
@@ -46,12 +51,7 @@ def create_search_runtime(
     # 搜索 API 即使尚未导入仓库，也应该返回空结果而不是索引不存在错误。
     create_code_index(open_search_connection)
     create_code_vector_collection(qdrant_client)
-    embedding_model = LocalEmbeddingModel(
-        model_name=settings.embedding.model_name,
-        device=settings.embedding.device,
-        max_sequence_length=settings.embedding.max_sequence_length,
-        expected_dimension=settings.embedding.dimension,
-    )
+    embedding_model = _create_embedding_model(settings)
     search_service = SearchService(
         open_search_connection=open_search_connection,
         qdrant_client=qdrant_client,
@@ -66,4 +66,41 @@ def create_search_runtime(
         qdrant_client=qdrant_client,
         embedding_model=embedding_model,
         search_service=search_service,
+    )
+
+
+def _create_embedding_model(settings: SearchSettings) -> EmbeddingModel:
+    """根据配置或环境变量选择本地模型与远程 API。"""
+
+    provider = os.getenv(
+        "SECVAL_EMBEDDING_PROVIDER", settings.embedding.provider
+    ).strip().lower()
+    if provider == "local":
+        return LocalEmbeddingModel(
+            model_name=settings.embedding.model_name,
+            device=settings.embedding.device,
+            max_sequence_length=settings.embedding.max_sequence_length,
+            expected_dimension=settings.embedding.dimension,
+        )
+    if provider != "api":
+        raise ValueError("SECVAL_EMBEDDING_PROVIDER 只能是 local 或 api")
+
+    model_name = os.getenv(
+        "SECVAL_EMBEDDING_API_MODEL", "qwen3.7-text-embedding"
+    )
+    dimension = int(
+        os.getenv(
+            "SECVAL_EMBEDDING_API_DIMENSION",
+            str(settings.embedding.dimension),
+        )
+    )
+    return ApiEmbeddingModel(
+        api_url=os.getenv("SECVAL_EMBEDDING_API_URL", ""),
+        api_key=os.getenv("SECVAL_EMBEDDING_API_KEY", ""),
+        model_name=model_name,
+        expected_dimension=dimension,
+        batch_size=int(os.getenv("SECVAL_EMBEDDING_API_BATCH_SIZE", "64")),
+        timeout_seconds=int(
+            os.getenv("SECVAL_EMBEDDING_API_TIMEOUT_SECONDS", "120")
+        ),
     )

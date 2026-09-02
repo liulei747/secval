@@ -33,6 +33,8 @@ def create_runtime() -> MagicMock:
     runtime = MagicMock()
     runtime.open_search_connection.ping.return_value = True
     runtime.qdrant_client.get_collections.return_value = MagicMock()
+    runtime.embedding_model.provider_name = "local"
+    runtime.embedding_model.model_name = "Qwen/Qwen3-Embedding-0.6B"
     return runtime
 
 
@@ -74,6 +76,9 @@ def test_health_endpoint_reports_both_stores() -> None:
         "status": "healthy",
         "open_search": "available",
         "qdrant": "available",
+        "embedding_provider": "local",
+        "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
+        "vector_collection": "secval-code-vectors-qwen3-06b-v2",
     }
 
 

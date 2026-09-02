@@ -69,10 +69,28 @@ def build_keyword_search_body(query: SearchQuery) -> dict[str, Any]:
         "query": {
             "bool": {
                 "must": {
-                    "multi_match": {
-                        "query": query.text,
-                        "fields": ["symbol_name^2", "search_text"],
-                        "analyzer": "code_analyzer",
+                    "bool": {
+                        "should": [
+                            {
+                                "multi_match": {
+                                    "query": query.text,
+                                    "fields": [
+                                        "symbol_name^2",
+                                        "search_text",
+                                    ],
+                                    "analyzer": "code_analyzer",
+                                }
+                            },
+                            {
+                                "match": {
+                                    "content": {
+                                        "query": query.text,
+                                        "minimum_should_match": "60%",
+                                    }
+                                }
+                            },
+                        ],
+                        "minimum_should_match": 1,
                     }
                 },
                 "filter": filters,

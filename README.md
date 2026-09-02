@@ -1,5 +1,17 @@
 # Secval
 
+## 使用远程 Embedding API
+
+搜索服务默认继续使用本地 `Qwen/Qwen3-Embedding-0.6B`。如果要改用 OpenAI
+兼容的 Embedding API，把 `.env.example` 复制为 `.env`，填写完整的
+`SECVAL_EMBEDDING_API_URL` 和 `SECVAL_EMBEDDING_API_KEY`，然后重新构建并启动
+API 容器。默认远程模型 ID 是 `qwen3.7-text-embedding`。
+API 地址既可以填写 `/v1` 基础地址，也可以填写完整的 `/v1/embeddings`。
+
+远程模型使用独立的 Qdrant Collection。切换模型后必须重新建立仓库索引，查询
+和代码入库必须使用同一个模型及维度；接口返回维度不是 1024 时，服务会拒绝写入
+并报告实际维度，随后再据实调整配置。
+
 Secval 是一个面向代码分析的大型 Web 平台。
 
 当前首先建设混合搜索板块。搜索板块会把关键词搜索和向量搜索的结果合并，向后续的代码关系、代码路径和 Agent 板块提供代码片段。

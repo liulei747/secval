@@ -4,7 +4,7 @@ from opensearchpy import OpenSearch
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from secval.hybrid_search.local_embedding import LocalEmbeddingModel
+from secval.hybrid_search.local_embedding import EmbeddingModel
 from secval.hybrid_search.open_search_storage import load_code_chunks_by_ids
 from secval.hybrid_search.search_models import SearchQuery, SearchResult
 from secval.hybrid_search.vector_storage import CODE_VECTOR_COLLECTION
@@ -14,7 +14,7 @@ from secval.shared_types import ChunkId
 def search_by_vector(
     qdrant_client: QdrantClient,
     open_search_connection: OpenSearch,
-    embedding_model: LocalEmbeddingModel,
+    embedding_model: EmbeddingModel,
     query: SearchQuery,
 ) -> list[SearchResult]:
     """查找语义相近的向量，并读取对应的完整代码块。"""
