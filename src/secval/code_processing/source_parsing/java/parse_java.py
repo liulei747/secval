@@ -3,7 +3,7 @@
 import tree_sitter_java
 from tree_sitter import Language, Parser, Tree
 
-from secval.code_processing.code_models import SourceFile
+from secval.models.code import SourceFile
 
 # Java 语法定义在程序运行期间不会变化，可以安全地重复使用。
 JAVA_LANGUAGE = Language(tree_sitter_java.language())

@@ -3,6 +3,7 @@
 from .search_settings import (
     EmbeddingSettings,
     FusionSettings,
+    RerankerSettings,
     SearchSettings,
     ServiceAddress,
     load_search_settings,
@@ -11,6 +12,7 @@ from .search_settings import (
 __all__ = [
     "EmbeddingSettings",
     "FusionSettings",
+    "RerankerSettings",
     "SearchSettings",
     "ServiceAddress",
     "load_search_settings",

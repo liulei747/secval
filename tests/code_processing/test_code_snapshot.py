@@ -1,6 +1,6 @@
 import unittest
 
-from secval.code_processing.code_models import CodeSnapshot
+from secval.models.code import CodeSnapshot
 from secval.shared_types import RepositoryId, SnapshotId
 
 

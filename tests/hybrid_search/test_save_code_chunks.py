@@ -2,11 +2,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from secval.code_processing.code_models import CodeChunk
-from secval.hybrid_search.open_search_storage import (
+from secval.infrastructure.opensearch import (
     CODE_INDEX_NAME,
     save_code_chunks,
 )
+from secval.models.code import CodeChunk
 from secval.shared_types import ChunkId, FileId, RepositoryId, SnapshotId
 
 
@@ -28,7 +28,7 @@ def create_code_chunk(chunk_number: int) -> CodeChunk:
 
 
 @patch(
-    "secval.hybrid_search.open_search_storage.save_code_chunks.bulk"
+    "secval.infrastructure.opensearch.save_code_chunks.bulk"
 )
 def test_save_multiple_code_chunks(mock_bulk: MagicMock) -> None:
     connection = MagicMock()
@@ -54,7 +54,7 @@ def test_save_multiple_code_chunks(mock_bulk: MagicMock) -> None:
 
 
 @patch(
-    "secval.hybrid_search.open_search_storage.save_code_chunks.bulk"
+    "secval.infrastructure.opensearch.save_code_chunks.bulk"
 )
 def test_do_not_request_open_search_for_empty_list(
     mock_bulk: MagicMock,
@@ -68,7 +68,7 @@ def test_do_not_request_open_search_for_empty_list(
 
 
 @patch(
-    "secval.hybrid_search.open_search_storage.save_code_chunks.bulk"
+    "secval.infrastructure.opensearch.save_code_chunks.bulk"
 )
 def test_reject_duplicate_chunk_ids_before_open_search_write(
     mock_bulk: MagicMock,

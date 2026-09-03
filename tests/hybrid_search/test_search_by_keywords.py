@@ -1,11 +1,11 @@
 from unittest.mock import MagicMock
 
-from secval.hybrid_search.keyword_search import (
+from secval.infrastructure.opensearch import (
+    CODE_INDEX_NAME,
     build_keyword_search_body,
     search_by_keywords,
 )
-from secval.hybrid_search.open_search_storage import CODE_INDEX_NAME
-from secval.hybrid_search.search_models import SearchQuery
+from secval.models.search import SearchQuery
 from secval.shared_types import RepositoryId, SnapshotId
 
 

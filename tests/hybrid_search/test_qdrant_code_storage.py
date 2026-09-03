@@ -4,15 +4,15 @@ from unittest.mock import MagicMock
 import pytest
 from qdrant_client.http import models
 
-from secval.code_processing.code_models import CodeChunk
-from secval.hybrid_search.local_embedding import EMBEDDING_DIMENSION
-from secval.hybrid_search.vector_storage import (
+from secval.infrastructure.embedding import EMBEDDING_DIMENSION
+from secval.infrastructure.qdrant import (
     CODE_VECTOR_COLLECTION,
     create_code_vector_collection,
     create_vector_point_id,
     delete_old_code_vectors,
     save_code_vectors,
 )
+from secval.models.code import CodeChunk
 from secval.shared_types import ChunkId, FileId, RepositoryId, SnapshotId
 
 

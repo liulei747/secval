@@ -1,9 +1,9 @@
-from secval.code_processing.code_models import SourceFile
 from secval.code_processing.code_splitting.java import split_java_declarations
 from secval.code_processing.source_parsing.java import (
     extract_java_symbols,
     parse_java,
 )
+from secval.models.code import SourceFile
 from secval.shared_types import FileId, RepositoryId, SnapshotId
 
 JAVA_SOURCE = """package demo;

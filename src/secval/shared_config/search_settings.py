@@ -9,6 +9,7 @@ import yaml
 SUPPORTED_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 SUPPORTED_EMBEDDING_DIMENSION = 1024
 SUPPORTED_EMBEDDING_PROVIDERS = {"local", "api"}
+SUPPORTED_RERANKER_PROVIDERS = {"none", "local"}
 
 
 @dataclass
@@ -81,6 +82,30 @@ class FusionSettings:
 
 
 @dataclass
+class RerankerSettings:
+    """搜索结果精排配置。"""
+
+    provider: str
+    model_name: str
+    device: str
+    candidate_count: int
+    max_sequence_length: int
+    batch_size: int
+
+    def __post_init__(self) -> None:
+        if self.provider not in SUPPORTED_RERANKER_PROVIDERS:
+            raise ValueError("Reranker provider只能是none或local")
+        if self.provider == "local" and not self.model_name.strip():
+            raise ValueError("本地Reranker模型名称不能为空")
+        if not self.device.strip():
+            raise ValueError("Reranker运行设备不能为空")
+        if self.candidate_count < 1:
+            raise ValueError("Reranker候选数量必须大于0")
+        if self.max_sequence_length < 1 or self.batch_size < 1:
+            raise ValueError("Reranker最大长度和批次必须大于0")
+
+
+@dataclass
 class SearchSettings:
     """搜索板块启动时需要的全部配置。"""
 
@@ -88,6 +113,7 @@ class SearchSettings:
     qdrant: ServiceAddress
     embedding: EmbeddingSettings
     fusion: FusionSettings
+    reranker: RerankerSettings
 
 
 def load_search_settings(
@@ -114,6 +140,19 @@ def load_search_settings(
     qdrant = _read_service_address(raw_settings, "qdrant")
     embedding_data = _read_section(raw_settings, "embedding")
     fusion_data = _read_section(raw_settings, "fusion")
+    reranker_data = raw_settings.get(
+        "reranker",
+        {
+            "provider": "none",
+            "model_name": "BAAI/bge-reranker-base",
+            "device": "cpu",
+            "candidate_count": 10,
+            "max_sequence_length": 256,
+            "batch_size": 8,
+        },
+    )
+    if not isinstance(reranker_data, dict):
+        raise ValueError("搜索配置中的reranker必须是配置对象")
 
     try:
         provider = str(embedding_data.get("provider", "local"))
@@ -125,6 +164,14 @@ def load_search_settings(
         )
         candidate_multiplier = int(fusion_data["candidate_multiplier"])
         max_candidate_count = int(fusion_data["max_candidate_count"])
+        reranker_provider = str(reranker_data["provider"])
+        reranker_model_name = str(reranker_data["model_name"])
+        reranker_device = str(reranker_data["device"])
+        reranker_candidate_count = int(reranker_data["candidate_count"])
+        reranker_max_sequence_length = int(
+            reranker_data["max_sequence_length"]
+        )
+        reranker_batch_size = int(reranker_data["batch_size"])
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("搜索配置缺少字段或字段类型错误") from error
 
@@ -139,12 +186,21 @@ def load_search_settings(
         candidate_multiplier=candidate_multiplier,
         max_candidate_count=max_candidate_count,
     )
+    reranker = RerankerSettings(
+        provider=reranker_provider,
+        model_name=reranker_model_name,
+        device=reranker_device,
+        candidate_count=reranker_candidate_count,
+        max_sequence_length=reranker_max_sequence_length,
+        batch_size=reranker_batch_size,
+    )
 
     return SearchSettings(
         open_search=open_search,
         qdrant=qdrant,
         embedding=embedding,
         fusion=fusion,
+        reranker=reranker,
     )
 
 

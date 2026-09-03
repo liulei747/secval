@@ -1,31 +1,30 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from secval.hybrid_search.search_models import SearchQuery
-from secval.hybrid_search.search_service import SearchService
+from secval.infrastructure.reranker import NoopReranker
+from secval.interfaces import RerankerError
+from secval.models.search import SearchQuery
+from secval.services.search_service import SearchService
 from secval.shared_types import RepositoryId, SnapshotId
 
 
-@patch("secval.hybrid_search.search_service.fuse_with_rrf")
-@patch("secval.hybrid_search.search_service.search_by_vector")
-@patch("secval.hybrid_search.search_service.search_by_keywords")
-def test_run_complete_hybrid_search_flow(
-    mock_keyword_search: MagicMock,
-    mock_vector_search: MagicMock,
-    mock_fuse: MagicMock,
-) -> None:
-    open_search_connection = MagicMock()
-    qdrant_client = MagicMock()
-    embedding_model = MagicMock()
+def test_run_complete_hybrid_search_flow() -> None:
+    keyword_retriever = MagicMock()
+    vector_retriever = MagicMock()
+    result_fusion = MagicMock()
+    reranker = MagicMock()
+    reranker.candidate_count = 10
     keyword_results = [MagicMock()]
     vector_results = [MagicMock()]
     final_results = [MagicMock()]
-    mock_keyword_search.return_value = keyword_results
-    mock_vector_search.return_value = vector_results
-    mock_fuse.return_value = final_results
+    keyword_retriever.search.return_value = keyword_results
+    vector_retriever.search.return_value = vector_results
+    result_fusion.fuse.return_value = final_results
+    reranker.rerank.return_value = final_results
     service = SearchService(
-        open_search_connection=open_search_connection,
-        qdrant_client=qdrant_client,
-        embedding_model=embedding_model,
+        keyword_retriever=keyword_retriever,
+        vector_retriever=vector_retriever,
+        result_fusion=result_fusion,
+        reranker=reranker,
     )
     query = SearchQuery(
         text="查找用户权限校验",
@@ -37,40 +36,38 @@ def test_run_complete_hybrid_search_flow(
 
     results = service.search(query)
 
-    candidate_query = mock_keyword_search.call_args.kwargs["query"]
+    candidate_query = keyword_retriever.search.call_args.args[0]
     assert candidate_query.top_k == 30
     assert candidate_query.text == query.text
     assert candidate_query.language == "java"
-    mock_keyword_search.assert_called_once_with(
-        connection=open_search_connection,
-        query=candidate_query,
-    )
-    mock_vector_search.assert_called_once_with(
-        qdrant_client=qdrant_client,
-        open_search_connection=open_search_connection,
-        embedding_model=embedding_model,
-        query=candidate_query,
-    )
-    mock_fuse.assert_called_once_with(
+    keyword_retriever.search.assert_called_once_with(candidate_query)
+    vector_retriever.search.assert_called_once_with(candidate_query)
+    result_fusion.fuse.assert_called_once_with(
         keyword_results=keyword_results,
         vector_results=vector_results,
+        top_k=10,
+    )
+    reranker.rerank.assert_called_once_with(
+        query=query.text,
+        candidates=final_results,
         top_k=10,
     )
     assert results is final_results
 
 
-@patch("secval.hybrid_search.search_service.fuse_with_rrf")
-@patch("secval.hybrid_search.search_service.search_by_vector")
-@patch("secval.hybrid_search.search_service.search_by_keywords")
-def test_limit_internal_candidates_to_one_hundred(
-    mock_keyword_search: MagicMock,
-    mock_vector_search: MagicMock,
-    mock_fuse: MagicMock,
-) -> None:
-    mock_keyword_search.return_value = []
-    mock_vector_search.return_value = []
-    mock_fuse.return_value = []
-    service = SearchService(MagicMock(), MagicMock(), MagicMock())
+def test_limit_internal_candidates_to_one_hundred() -> None:
+    keyword_retriever = MagicMock()
+    vector_retriever = MagicMock()
+    result_fusion = MagicMock()
+    keyword_retriever.search.return_value = []
+    vector_retriever.search.return_value = []
+    result_fusion.fuse.return_value = []
+    service = SearchService(
+        keyword_retriever,
+        vector_retriever,
+        result_fusion,
+        NoopReranker(),
+    )
     query = SearchQuery(
         text="find user",
         repository_ids=[RepositoryId("repository-1")],
@@ -80,5 +77,32 @@ def test_limit_internal_candidates_to_one_hundred(
 
     service.search(query)
 
-    candidate_query = mock_keyword_search.call_args.kwargs["query"]
+    candidate_query = keyword_retriever.search.call_args.args[0]
     assert candidate_query.top_k == 100
+
+
+def test_fall_back_to_rrf_when_reranker_fails() -> None:
+    keyword_retriever = MagicMock()
+    vector_retriever = MagicMock()
+    result_fusion = MagicMock()
+    reranker = MagicMock()
+    reranker.candidate_count = 10
+    reranker.rerank.side_effect = RerankerError("model unavailable")
+    fused_results = [MagicMock(), MagicMock()]
+    keyword_retriever.search.return_value = []
+    vector_retriever.search.return_value = []
+    result_fusion.fuse.return_value = fused_results
+    service = SearchService(
+        keyword_retriever,
+        vector_retriever,
+        result_fusion,
+        reranker,
+    )
+    query = SearchQuery(
+        text="find user",
+        repository_ids=[RepositoryId("repository-1")],
+        snapshot_ids=[SnapshotId("snapshot-1")],
+        top_k=1,
+    )
+
+    assert service.search(query) == fused_results[:1]

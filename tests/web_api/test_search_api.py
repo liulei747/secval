@@ -5,8 +5,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi.testclient import TestClient
 
-from secval.code_processing.code_models import CodeChunk
-from secval.hybrid_search.search_models import SearchResult
+from secval.models.code import CodeChunk
+from secval.models.search import SearchResult
 from secval.shared_types import (
     ChunkId,
     FileId,
@@ -35,6 +35,8 @@ def create_runtime() -> MagicMock:
     runtime.qdrant_client.get_collections.return_value = MagicMock()
     runtime.embedding_model.provider_name = "local"
     runtime.embedding_model.model_name = "Qwen/Qwen3-Embedding-0.6B"
+    runtime.reranker.provider_name = "none"
+    runtime.reranker.model_name = None
     return runtime
 
 
@@ -79,6 +81,8 @@ def test_health_endpoint_reports_both_stores() -> None:
         "embedding_provider": "local",
         "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
         "vector_collection": "secval-code-vectors-qwen3-06b-v2",
+        "reranker_provider": "none",
+        "reranker_model": None,
     }
 
 

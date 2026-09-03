@@ -18,14 +18,14 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from secval.code_processing.code_models import CodeRepository, CodeSnapshot
-from secval.hybrid_search.search_indexing import index_repository
-from secval.hybrid_search.search_models import SearchQuery, SearchResult
-from secval.hybrid_search.search_runtime import (
+from secval.bootstrap.search_runtime import (
     SearchRuntime,
     create_search_runtime,
 )
-from secval.hybrid_search.vector_storage import CODE_VECTOR_COLLECTION
+from secval.infrastructure.qdrant import CODE_VECTOR_COLLECTION
+from secval.models.code import CodeRepository, CodeSnapshot
+from secval.models.search import SearchQuery, SearchResult
+from secval.services import index_repository
 from secval.shared_types import RepositoryId, SnapshotId
 from secval.web_api.repository_upload import (
     UploadRepositoryResponse,
@@ -67,6 +67,8 @@ class SearchResultResponse(BaseModel):
     final_score: float
     keyword_score: float | None
     vector_score: float | None
+    rrf_score: float | None
+    reranker_score: float | None
 
 
 class SearchResponse(BaseModel):
@@ -112,6 +114,8 @@ class HealthResponse(BaseModel):
     embedding_provider: str
     embedding_model: str
     vector_collection: str
+    reranker_provider: str
+    reranker_model: str | None
 
 
 def create_search_app(
@@ -178,6 +182,8 @@ def create_search_app(
             embedding_provider=active_runtime.embedding_model.provider_name,
             embedding_model=active_runtime.embedding_model.model_name,
             vector_collection=CODE_VECTOR_COLLECTION,
+            reranker_provider=active_runtime.reranker.provider_name,
+            reranker_model=active_runtime.reranker.model_name,
         )
 
     @app.post("/api/search", response_model=SearchResponse)
@@ -185,7 +191,7 @@ def create_search_app(
         search_request: SearchRequest,
         request: Request,
     ) -> SearchResponse:
-        """执行 BM25、向量搜索和 RRF 合并。"""
+        """执行BM25、向量召回、RRF融合和可选重排序。"""
 
         active_runtime: SearchRuntime = request.app.state.search_runtime
 
@@ -407,6 +413,8 @@ def _create_result_response(result: SearchResult) -> SearchResultResponse:
         final_score=result.final_score,
         keyword_score=result.keyword_score,
         vector_score=result.vector_score,
+        rrf_score=result.rrf_score,
+        reranker_score=result.reranker_score,
     )
 
 

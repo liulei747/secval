@@ -17,6 +17,8 @@ def test_load_default_search_settings() -> None:
     assert settings.embedding.device == "cpu"
     assert settings.fusion.candidate_multiplier == 3
     assert settings.fusion.max_candidate_count == 100
+    assert settings.reranker.provider == "none"
+    assert settings.reranker.candidate_count == 10
 
 
 def test_reject_unsupported_embedding_dimension(tmp_path: Path) -> None:

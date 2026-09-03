@@ -1,6 +1,6 @@
 import unittest
 
-from secval.code_processing.code_models import CodeRepository
+from secval.models.code import CodeRepository
 from secval.shared_types import RepositoryId
 
 

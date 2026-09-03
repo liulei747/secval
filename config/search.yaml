@@ -23,3 +23,12 @@ fusion:
   # 每一路多召回候选，再由 RRF 合并为用户要求的 Top K。
   candidate_multiplier: 3
   max_candidate_count: 100
+
+reranker:
+  # 本机直接运行时默认关闭；Docker配置启用经过实测的本地模型。
+  provider: none
+  model_name: BAAI/bge-reranker-base
+  device: cpu
+  candidate_count: 10
+  max_sequence_length: 256
+  batch_size: 8

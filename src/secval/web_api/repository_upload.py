@@ -11,7 +11,6 @@ from uuid import uuid4
 from fastapi import UploadFile
 from pydantic import BaseModel
 
-
 MAX_UPLOAD_FILE_COUNT = 10_000
 MAX_UPLOAD_TOTAL_BYTES = 500 * 1024 * 1024
 MAX_ZIP_FILE_BYTES = 200 * 1024 * 1024
@@ -203,16 +202,18 @@ def extract_zip_entries(
         destination = temporary_directory.joinpath(*relative_path.parts)
         destination.parent.mkdir(parents=True, exist_ok=True)
 
-        with archive.open(entry) as source_file:
-            with destination.open("wb") as saved_file:
-                while True:
-                    file_part = source_file.read(UPLOAD_COPY_BUFFER_SIZE)
-                    if not file_part:
-                        break
-                    extracted_bytes += len(file_part)
-                    if extracted_bytes > MAX_UPLOAD_TOTAL_BYTES:
-                        raise ValueError("ZIP 解压后的总大小不能超过 500 MB")
-                    saved_file.write(file_part)
+        with (
+            archive.open(entry) as source_file,
+            destination.open("wb") as saved_file,
+        ):
+            while True:
+                file_part = source_file.read(UPLOAD_COPY_BUFFER_SIZE)
+                if not file_part:
+                    break
+                extracted_bytes += len(file_part)
+                if extracted_bytes > MAX_UPLOAD_TOTAL_BYTES:
+                    raise ValueError("ZIP 解压后的总大小不能超过 500 MB")
+                saved_file.write(file_part)
 
     return extracted_bytes
 

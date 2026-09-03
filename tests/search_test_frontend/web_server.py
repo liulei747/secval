@@ -7,7 +7,6 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-
 FRONTEND_DIRECTORY = Path(__file__).parent
 DEFAULT_API_ADDRESS = "http://127.0.0.1:8000"
 ALLOWED_API_PATHS = {

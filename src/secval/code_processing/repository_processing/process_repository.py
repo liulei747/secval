@@ -1,16 +1,16 @@
 """扫描并处理一个代码仓库。"""
 
-from secval.code_processing.code_models import (
-    CodeChunk,
-    FileProcessError,
-    RepositoryProcessResult,
-)
 from secval.code_processing.code_splitting.java import split_java_declarations
 from secval.code_processing.repository_scan import scan_repository
 from secval.code_processing.source_parsing import parse_java
 from secval.code_processing.source_reading import read_source_file
 from secval.code_processing.source_reading.read_source_file import (
     DEFAULT_MAX_FILE_SIZE,
+)
+from secval.models.code import (
+    CodeChunk,
+    FileProcessError,
+    RepositoryProcessResult,
 )
 from secval.shared_types import (
     RepositoryId,

@@ -2,15 +2,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from secval.code_processing.code_models import (
+from secval.infrastructure.embedding import EMBEDDING_DIMENSION
+from secval.models.code import (
     CodeChunk,
     CodeRepository,
     CodeSnapshot,
     FileProcessError,
     RepositoryProcessResult,
 )
-from secval.hybrid_search.local_embedding import EMBEDDING_DIMENSION
-from secval.hybrid_search.search_indexing import index_repository
+from secval.services import index_repository
 from secval.shared_types import (
     ChunkId,
     FileId,
@@ -68,13 +68,13 @@ def create_process_result() -> RepositoryProcessResult:
     )
 
 
-@patch("secval.hybrid_search.search_indexing.index_repository.delete_old_code_vectors")
-@patch("secval.hybrid_search.search_indexing.index_repository.delete_old_code_chunks")
-@patch("secval.hybrid_search.search_indexing.index_repository.save_code_vectors")
-@patch("secval.hybrid_search.search_indexing.index_repository.save_code_chunks")
-@patch("secval.hybrid_search.search_indexing.index_repository.create_code_vector_collection")
-@patch("secval.hybrid_search.search_indexing.index_repository.process_repository")
-@patch("secval.hybrid_search.search_indexing.index_repository.create_code_index")
+@patch("secval.services.index_service.delete_old_code_vectors")
+@patch("secval.services.index_service.delete_old_code_chunks")
+@patch("secval.services.index_service.save_code_vectors")
+@patch("secval.services.index_service.save_code_chunks")
+@patch("secval.services.index_service.create_code_vector_collection")
+@patch("secval.services.index_service.process_repository")
+@patch("secval.services.index_service.create_code_index")
 def test_index_repository_runs_the_complete_flow(
     mock_create_code_index: MagicMock,
     mock_process_repository: MagicMock,
@@ -155,7 +155,7 @@ def test_index_repository_runs_the_complete_flow(
     assert result.index_run_id == index_run_id
 
 
-@patch("secval.hybrid_search.search_indexing.index_repository.create_code_index")
+@patch("secval.services.index_service.create_code_index")
 def test_reject_snapshot_from_another_repository(
     mock_create_code_index: MagicMock,
 ) -> None:
@@ -177,24 +177,24 @@ def test_do_not_delete_old_data_when_vector_save_fails() -> None:
     embedding_model.embed_code.return_value = [[0.0] * EMBEDDING_DIMENSION]
 
     with patch(
-        "secval.hybrid_search.search_indexing.index_repository.create_code_index",
+        "secval.services.index_service.create_code_index",
         return_value=False,
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.create_code_vector_collection",
+        "secval.services.index_service.create_code_vector_collection",
         return_value=False,
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.process_repository",
+        "secval.services.index_service.process_repository",
         return_value=process_result,
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.save_code_chunks",
+        "secval.services.index_service.save_code_chunks",
         return_value=1,
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.save_code_vectors",
+        "secval.services.index_service.save_code_vectors",
         side_effect=RuntimeError("向量写入失败"),
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.delete_old_code_chunks"
+        "secval.services.index_service.delete_old_code_chunks"
     ) as mock_delete_chunks, patch(
-        "secval.hybrid_search.search_indexing.index_repository.delete_old_code_vectors"
+        "secval.services.index_service.delete_old_code_vectors"
     ) as mock_delete_vectors, pytest.raises(
         RuntimeError,
         match="向量写入失败",
@@ -226,22 +226,22 @@ def test_do_not_replace_old_index_when_any_source_file_fails() -> None:
     embedding_model = MagicMock()
 
     with patch(
-        "secval.hybrid_search.search_indexing.index_repository.create_code_index",
+        "secval.services.index_service.create_code_index",
         return_value=False,
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.create_code_vector_collection",
+        "secval.services.index_service.create_code_vector_collection",
         return_value=False,
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.process_repository",
+        "secval.services.index_service.process_repository",
         return_value=process_result,
     ), patch(
-        "secval.hybrid_search.search_indexing.index_repository.save_code_chunks"
+        "secval.services.index_service.save_code_chunks"
     ) as mock_save_chunks, patch(
-        "secval.hybrid_search.search_indexing.index_repository.save_code_vectors"
+        "secval.services.index_service.save_code_vectors"
     ) as mock_save_vectors, patch(
-        "secval.hybrid_search.search_indexing.index_repository.delete_old_code_chunks"
+        "secval.services.index_service.delete_old_code_chunks"
     ) as mock_delete_chunks, patch(
-        "secval.hybrid_search.search_indexing.index_repository.delete_old_code_vectors"
+        "secval.services.index_service.delete_old_code_vectors"
     ) as mock_delete_vectors, pytest.raises(
         ValueError,
         match="本次索引未替换",

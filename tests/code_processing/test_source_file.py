@@ -1,6 +1,6 @@
 import unittest
 
-from secval.code_processing.code_models import SourceFile
+from secval.models.code import SourceFile
 from secval.shared_types import FileId, RepositoryId, SnapshotId
 
 

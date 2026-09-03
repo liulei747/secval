@@ -1,0 +1,107 @@
+{
+  "model": "BAAI/bge-reranker-base",
+  "device": "cpu",
+  "query": "检查登录账号是否重复",
+  "max_length": 256,
+  "batch_size": 8,
+  "repeats": 3,
+  "model_load_seconds": 356.95,
+  "peak_process_memory_before_model_mb": 415.18,
+  "peak_process_memory_after_benchmark_mb": 1555.45,
+  "torch_version": "2.14.0+cpu",
+  "python_version": "3.12.13",
+  "measurements": [
+    {
+      "candidate_count": 1,
+      "runs_ms": [
+        125.36,
+        131.06,
+        142.76
+      ],
+      "median_ms": 131.06,
+      "p95_ms": 142.76,
+      "candidates_per_second": 7.63,
+      "top_3": [
+        {
+          "path": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/UserController.java",
+          "score": 0.000307
+        }
+      ]
+    },
+    {
+      "candidate_count": 5,
+      "runs_ms": [
+        528.64,
+        510.76,
+        515.96
+      ],
+      "median_ms": 515.96,
+      "p95_ms": 528.64,
+      "candidates_per_second": 9.69,
+      "top_3": [
+        {
+          "path": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/CorpAdminController.java",
+          "score": 0.000741
+        },
+        {
+          "path": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/EmpUserController.java",
+          "score": 0.000454
+        },
+        {
+          "path": "modules/core/src/main/java/com/jeesite/modules/sys/web/AccountController.java",
+          "score": 0.000432
+        }
+      ]
+    },
+    {
+      "candidate_count": 10,
+      "runs_ms": [
+        1046.35,
+        1035.85,
+        1053.54
+      ],
+      "median_ms": 1046.35,
+      "p95_ms": 1053.54,
+      "candidates_per_second": 9.56,
+      "top_3": [
+        {
+          "path": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/CorpAdminController.java",
+          "score": 0.000741
+        },
+        {
+          "path": "modules/core/src/main/java/com/jeesite/common/shiro/realm/AuthorizingRealm.java",
+          "score": 0.000522
+        },
+        {
+          "path": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/EmpUserController.java",
+          "score": 0.000454
+        }
+      ]
+    },
+    {
+      "candidate_count": 20,
+      "runs_ms": [
+        2030.91,
+        2858.61,
+        4177.23
+      ],
+      "median_ms": 2858.61,
+      "p95_ms": 4177.23,
+      "candidates_per_second": 7.0,
+      "top_3": [
+        {
+          "path": "common/src/main/java/com/jeesite/common/collect/ListUtils.java",
+          "score": 0.00105
+        },
+        {
+          "path": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/CorpAdminController.java",
+          "score": 0.000741
+        },
+        {
+          "path": "common/src/main/java/com/jeesite/common/codec/EncodeUtils.java",
+          "score": 0.000635
+        }
+      ]
+    }
+  ]
+}

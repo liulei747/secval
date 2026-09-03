@@ -17,3 +17,11 @@ embedding:
 fusion:
   candidate_multiplier: 3
   max_candidate_count: 100
+
+reranker:
+  provider: local
+  model_name: BAAI/bge-reranker-base
+  device: cpu
+  candidate_count: 10
+  max_sequence_length: 256
+  batch_size: 8

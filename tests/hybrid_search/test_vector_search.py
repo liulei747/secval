@@ -3,13 +3,13 @@ from unittest.mock import MagicMock, patch
 
 from qdrant_client.http import models
 
-from secval.code_processing.code_models import CodeChunk
-from secval.hybrid_search.search_models import SearchQuery
-from secval.hybrid_search.vector_search import (
+from secval.infrastructure.qdrant import (
+    CODE_VECTOR_COLLECTION,
     build_vector_filter,
     search_by_vector,
 )
-from secval.hybrid_search.vector_storage import CODE_VECTOR_COLLECTION
+from secval.models.code import CodeChunk
+from secval.models.search import SearchQuery
 from secval.shared_types import (
     ChunkId,
     FileId,
@@ -61,7 +61,7 @@ def test_build_vector_filter() -> None:
 
 
 @patch(
-    "secval.hybrid_search.vector_search.search_by_vector."
+    "secval.infrastructure.qdrant.vector_retriever."
     "load_code_chunks_by_ids"
 )
 def test_search_by_vector_returns_ranked_code_chunks(

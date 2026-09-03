@@ -4,11 +4,11 @@ from collections import OrderedDict
 
 from tree_sitter import Tree
 
-from secval.code_processing.code_models import CodeChunk, SourceFile
 from secval.code_processing.source_parsing.java.extract_java_symbols import (
     JavaSymbolNode,
     extract_java_symbol_nodes,
 )
+from secval.models.code import CodeChunk, SourceFile
 from secval.shared_types import create_chunk_id
 
 

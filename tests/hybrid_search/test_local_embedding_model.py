@@ -3,17 +3,17 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from secval.hybrid_search.local_embedding import (
+from secval.infrastructure.embedding import (
     EMBEDDING_DIMENSION,
     LocalEmbeddingModel,
 )
-from secval.hybrid_search.local_embedding.local_embedding_model import (
+from secval.infrastructure.embedding.local_embedding_model import (
     CODE_EMBEDDING_BATCH_SIZE,
 )
 
 
 @patch(
-    "secval.hybrid_search.local_embedding.local_embedding_model."
+    "secval.infrastructure.embedding.local_embedding_model."
     "SentenceTransformer"
 )
 def test_embed_code(mock_model_class: MagicMock) -> None:
@@ -41,7 +41,7 @@ def test_embed_code(mock_model_class: MagicMock) -> None:
 
 
 @patch(
-    "secval.hybrid_search.local_embedding.local_embedding_model."
+    "secval.infrastructure.embedding.local_embedding_model."
     "SentenceTransformer"
 )
 def test_embed_query_adds_search_instruction(
@@ -64,7 +64,7 @@ def test_embed_query_adds_search_instruction(
 
 
 @patch(
-    "secval.hybrid_search.local_embedding.local_embedding_model."
+    "secval.infrastructure.embedding.local_embedding_model."
     "SentenceTransformer"
 )
 def test_reject_wrong_vector_dimension(

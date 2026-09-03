@@ -1,8 +1,8 @@
 import pytest
 
-from secval.code_processing.code_models import CodeChunk
-from secval.hybrid_search.result_fusion import RRF_RANK_CONSTANT, fuse_with_rrf
-from secval.hybrid_search.search_models import SearchResult
+from secval.infrastructure.fusion import RRF_RANK_CONSTANT, fuse_with_rrf
+from secval.models.code import CodeChunk
+from secval.models.search import SearchResult
 from secval.shared_types import ChunkId, FileId, RepositoryId, SnapshotId
 
 

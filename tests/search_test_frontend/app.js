@@ -43,6 +43,7 @@ async function checkHealth() {
         healthText.textContent = [
             `服务正常 · OpenSearch ${body.open_search} · Qdrant ${body.qdrant}`,
             `Embedding ${body.embedding_provider} · ${body.embedding_model}`,
+            `Reranker ${body.reranker_provider} · ${body.reranker_model || "关闭"}`,
         ].join(" · ");
     } catch (error) {
         healthDot.className = "health-dot error";
@@ -246,7 +247,9 @@ function showSearchResults(response) {
         const card = document.querySelector("#resultTemplate").content.cloneNode(true);
         card.querySelector(".rank").textContent = `#${result.rank}`;
         card.querySelector(".symbol-name").textContent = result.symbol_name || "未命名代码块";
-        card.querySelector(".score").textContent = `RRF ${formatScore(result.final_score)}`;
+        card.querySelector(".score").textContent = result.reranker_score === null
+            ? `RRF ${formatScore(result.rrf_score)}`
+            : `Rerank ${formatScore(result.reranker_score)}`;
         card.querySelector(".file-location").textContent = `${result.relative_path}:${result.start_line}-${result.end_line}`;
         card.querySelector(".code-content").textContent = result.content;
         card.querySelector(".keyword-score").textContent = `BM25 ${formatScore(result.keyword_score)}`;

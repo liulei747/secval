@@ -1,11 +1,11 @@
 from unittest.mock import MagicMock
 
-from secval.code_processing.code_models import CodeChunk
-from secval.hybrid_search.open_search_storage import (
+from secval.infrastructure.opensearch import (
     CODE_INDEX_NAME,
     code_chunk_to_document,
     save_code_chunk,
 )
+from secval.models.code import CodeChunk
 from secval.shared_types import (
     ChunkId,
     FileId,

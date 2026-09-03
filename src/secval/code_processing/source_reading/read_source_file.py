@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from secval.code_processing.code_models import SourceFile
+from secval.models.code import SourceFile
 from secval.shared_types import FileId, RepositoryId, SnapshotId
 
 # 默认最多读取 2 MiB，避免异常大文件占用过多内存。

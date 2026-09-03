@@ -39,4 +39,5 @@ ignore = ["EXE002", "TRY004"]
 
 [tool.ruff.lint.per-file-ignores]
 # 健康检查是故障边界：任何客户端异常都应转换成 503，而不是让检查本身崩溃。
-"src/secval/web_api/search_api.py" = ["BLE001"]
+# FastAPI使用File/Form对象作为路由参数默认值，这是框架要求的声明方式。
+"src/secval/web_api/search_api.py" = ["B008", "BLE001"]

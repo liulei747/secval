@@ -16,13 +16,34 @@ Secval 是一个面向代码分析的大型 Web 平台。
 
 当前首先建设混合搜索板块。搜索板块会把关键词搜索和向量搜索的结果合并，向后续的代码关系、代码路径和 Agent 板块提供代码片段。
 
+Docker搜索链路还会使用本地 `BAAI/bge-reranker-base` CrossEncoder 对RRF排在
+前面的10个候选做精排。模型只在API进程启动时加载一次；如果推理失败，搜索会自动
+退回RRF结果，不会导致整个搜索请求失败。相关参数位于 `config/search.docker.yaml`
+的 `reranker` 节，本地非Docker配置默认关闭该功能。
+
 ## 当前目录
 
+- `web_api`：接收HTTP请求并把结果转换成响应，不实现搜索算法。
+- `services`：编排建库和搜索流程；`SearchService`只调用能力接口。
+- `models`：代码仓库、代码块、符号、搜索条件和搜索结果等核心数据对象。
+- `interfaces`：定义Embedding、关键词召回、向量召回、结果融合和重排序能力。
+- `infrastructure`：使用OpenSearch、Qdrant、Embedding模型、RRF和CrossEncoder实现上述能力。
+- `bootstrap`：读取配置、创建连接和模型，并把具体实现注入业务服务。
+- `code_processing`：扫描、解析、切分源代码以及生成可索引代码块。
 - `shared_config`：全项目共享配置。
-- `shared_types`：多个板块共同使用的数据类型和资源 ID。
-- `code_processing`：扫描、解析和切分源代码。
-- `hybrid_search`：建立索引并执行混合搜索。
-- `web_api`：向 Web 前端或其他服务提供 HTTP 接口。
+- `shared_types`：多个板块共同使用的资源ID等基础类型。
+
+正式搜索依赖方向固定为：
+
+```text
+web_api → services → interfaces → models
+              ↑
+bootstrap → infrastructure
+```
+
+`bootstrap`负责把基础设施实现注入`services`。例如，搜索服务只认识
+`KeywordRetriever`、`VectorRetriever`、`ResultFusion`和`Reranker`，不会直接
+创建OpenSearch、Qdrant或CrossEncoder对象。
 
 Neo4j、Joern、Agent 和 MCP 暂未创建。
 

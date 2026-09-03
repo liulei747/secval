@@ -1,21 +1,22 @@
 from unittest.mock import MagicMock, patch
 
-from secval.hybrid_search.search_runtime import create_search_runtime
+from secval.bootstrap.search_runtime import create_search_runtime
 from secval.shared_config import (
     EmbeddingSettings,
     FusionSettings,
+    RerankerSettings,
     SearchSettings,
     ServiceAddress,
 )
 
 
-@patch("secval.hybrid_search.search_runtime.SearchService")
-@patch("secval.hybrid_search.search_runtime.LocalEmbeddingModel")
-@patch("secval.hybrid_search.search_runtime.create_code_vector_collection")
-@patch("secval.hybrid_search.search_runtime.create_code_index")
-@patch("secval.hybrid_search.search_runtime.create_qdrant_connection")
-@patch("secval.hybrid_search.search_runtime.create_open_search_connection")
-@patch("secval.hybrid_search.search_runtime.load_search_settings")
+@patch("secval.bootstrap.search_runtime.SearchService")
+@patch("secval.bootstrap.search_runtime.LocalEmbeddingModel")
+@patch("secval.bootstrap.search_runtime.create_code_vector_collection")
+@patch("secval.bootstrap.search_runtime.create_code_index")
+@patch("secval.bootstrap.search_runtime.create_qdrant_connection")
+@patch("secval.bootstrap.search_runtime.create_open_search_connection")
+@patch("secval.bootstrap.search_runtime.load_search_settings")
 def test_create_all_runtime_objects_from_settings(
     mock_load_settings: MagicMock,
     mock_create_open_search: MagicMock,
@@ -38,6 +39,14 @@ def test_create_all_runtime_objects_from_settings(
         fusion=FusionSettings(
             candidate_multiplier=4,
             max_candidate_count=80,
+        ),
+        reranker=RerankerSettings(
+            provider="none",
+            model_name="BAAI/bge-reranker-base",
+            device="cpu",
+            candidate_count=10,
+            max_sequence_length=256,
+            batch_size=8,
         ),
     )
     mock_load_settings.return_value = settings
@@ -69,12 +78,28 @@ def test_create_all_runtime_objects_from_settings(
         max_sequence_length=2048,
         expected_dimension=1024,
     )
+    service_arguments = mock_search_service_class.call_args.kwargs
+    assert service_arguments["keyword_retriever"].connection is open_search
+    assert service_arguments["vector_retriever"].qdrant_client is qdrant
+    assert (
+        service_arguments["vector_retriever"].open_search_connection
+        is open_search
+    )
+    assert service_arguments["vector_retriever"].embedding_model is embedding_model
+    assert service_arguments["result_fusion"].__class__.__name__ == (
+        "RrfResultFusion"
+    )
+    assert service_arguments["reranker"] is runtime.reranker
+    assert service_arguments["candidate_multiplier"] == 4
+    assert service_arguments["max_candidate_count"] == 80
     mock_search_service_class.assert_called_once_with(
-        open_search_connection=open_search,
-        qdrant_client=qdrant,
-        embedding_model=embedding_model,
+        keyword_retriever=service_arguments["keyword_retriever"],
+        vector_retriever=service_arguments["vector_retriever"],
+        result_fusion=service_arguments["result_fusion"],
+        reranker=runtime.reranker,
         candidate_multiplier=4,
         max_candidate_count=80,
     )
     assert runtime.settings is settings
+    assert runtime.reranker.provider_name == "none"
     assert runtime.search_service is search_service

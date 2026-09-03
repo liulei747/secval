@@ -2,10 +2,10 @@
 
 from tree_sitter import Tree
 
-from secval.code_processing.code_models import CodeChunk, SourceFile
 from secval.code_processing.code_splitting.java.split_java_declarations import (
     split_java_declarations,
 )
+from secval.models.code import CodeChunk, SourceFile
 
 
 def split_java_methods(

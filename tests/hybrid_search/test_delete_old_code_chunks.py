@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from secval.hybrid_search.open_search_storage import (
+from secval.infrastructure.opensearch import (
     CODE_INDEX_NAME,
     delete_old_code_chunks,
 )
