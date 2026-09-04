@@ -5,8 +5,8 @@ from secval.infrastructure.opensearch import (
     build_keyword_search_body,
     search_by_keywords,
 )
+from secval.models.identifiers import RepositoryId, SnapshotId
 from secval.models.search import SearchQuery
-from secval.shared_types import RepositoryId, SnapshotId
 
 
 def create_search_query() -> SearchQuery:

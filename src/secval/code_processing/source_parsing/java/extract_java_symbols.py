@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 from tree_sitter import Node, Tree
 
 from secval.models.code import CodeSymbol, SourceFile
-from secval.shared_types import SymbolId, create_symbol_id
+from secval.models.identifiers import SymbolId, create_symbol_id
 
 TYPE_DECLARATIONS = {
     "class_declaration": "class",

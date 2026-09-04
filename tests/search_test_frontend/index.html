@@ -134,6 +134,14 @@
 
                 <form id="searchForm">
                     <label>
+                        查询仓库 / 快照（来自当前已索引文本数据）
+                        <select id="searchScope" required disabled>
+                            <option value="">正在加载可查询仓库……</option>
+                        </select>
+                    </label>
+                    <button id="refreshRepositories" class="secondary-button" type="button">刷新已索引仓库</button>
+                    <p id="scopeStatus" class="help-text" aria-live="polite"></p>
+                    <label>
                         LLM 想查找什么
                         <textarea id="question" rows="4" required>用户身份认证在哪里实现？</textarea>
                     </label>
@@ -155,7 +163,7 @@
                         路径前缀（可选）
                         <input id="pathPrefix" placeholder="src/main/">
                     </label>
-                    <button id="searchButton" class="primary-button" type="submit">
+                    <button id="searchButton" class="primary-button" type="submit" disabled>
                         模拟 LLM 搜索
                     </button>
                 </form>

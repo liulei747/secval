@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from secval.code_processing.repository_processing import process_repository
-from secval.shared_types import RepositoryId, SnapshotId
+from secval.models.identifiers import RepositoryId, SnapshotId
 
 
 def test_process_a_java_repository(tmp_path: Path) -> None:

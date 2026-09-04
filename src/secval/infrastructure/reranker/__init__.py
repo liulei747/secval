@@ -2,7 +2,8 @@
 
 from secval.interfaces import Reranker, RerankerError
 
+from .api_reranker import ApiReranker
 from .local_reranker import LocalReranker
 from .noop_reranker import NoopReranker
 
-__all__ = ["LocalReranker", "NoopReranker", "Reranker", "RerankerError"]
+__all__ = ["ApiReranker", "LocalReranker", "NoopReranker", "Reranker", "RerankerError"]

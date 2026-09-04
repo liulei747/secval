@@ -6,14 +6,14 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from fastapi.testclient import TestClient
 
 from secval.models.code import CodeChunk
-from secval.models.search import SearchResult
-from secval.shared_types import (
+from secval.models.identifiers import (
     ChunkId,
     FileId,
     RepositoryId,
     SnapshotId,
     SymbolId,
 )
+from secval.models.search import SearchResult
 from secval.web_api import create_search_app
 
 
@@ -64,6 +64,50 @@ def create_search_result() -> SearchResult:
         keyword_score=4.2,
         vector_score=0.8,
     )
+
+
+def test_repository_catalog_returns_all_repository_snapshot_pairs() -> None:
+    runtime = create_runtime()
+    first_key = {"repository_id": "repo-a", "snapshot_id": "main"}
+    second_key = {"repository_id": "repo-a", "snapshot_id": "dev"}
+    runtime.open_search_connection.search.side_effect = [
+        {"aggregations": {"scopes": {
+            "buckets": [{"key": first_key, "doc_count": 4}],
+            "after_key": first_key,
+        }}},
+        {"aggregations": {"scopes": {
+            "buckets": [{"key": second_key, "doc_count": 12}],
+        }}},
+    ]
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.get("/api/repositories")
+    assert response.status_code == 200
+    assert response.json()["repositories"] == [
+        {**second_key, "chunk_count": 12},
+        {**first_key, "chunk_count": 4},
+    ]
+    calls = runtime.open_search_connection.search.call_args_list
+    assert calls[1].kwargs["body"]["aggs"]["scopes"]["composite"]["after"] == first_key
+    runtime.embedding_model.embed_query.assert_not_called()
+
+
+def test_repository_catalog_returns_empty_list_without_indexed_data() -> None:
+    runtime = create_runtime()
+    runtime.open_search_connection.search.return_value = {
+        "aggregations": {"scopes": {"buckets": []}},
+    }
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.get("/api/repositories")
+    assert response.status_code == 200
+    assert response.json() == {"repositories": []}
+
+
+def test_repository_catalog_reports_failure_not_empty_list() -> None:
+    runtime = create_runtime()
+    runtime.open_search_connection.search.return_value = {"timed_out": True}
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.get("/api/repositories")
+    assert response.status_code == 503
 
 
 def test_health_endpoint_reports_both_stores() -> None:

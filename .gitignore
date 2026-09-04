@@ -9,4 +9,6 @@ venv/
 build/
 data/
 tests/
-.tests/
+docs/*
+!docs/audit-implementation-status.md
+!docs/audit-handoff-2026-09-04.md

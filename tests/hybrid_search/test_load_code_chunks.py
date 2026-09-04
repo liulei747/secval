@@ -4,7 +4,7 @@ from secval.infrastructure.opensearch import (
     CODE_INDEX_NAME,
     load_code_chunks_by_ids,
 )
-from secval.shared_types import ChunkId
+from secval.models.identifiers import ChunkId
 
 
 def create_document(chunk_id: str) -> dict:

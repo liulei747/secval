@@ -11,6 +11,7 @@ FRONTEND_DIRECTORY = Path(__file__).parent
 DEFAULT_API_ADDRESS = "http://127.0.0.1:8000"
 ALLOWED_API_PATHS = {
     "/api/health",
+    "/api/repositories",
     "/api/repositories/upload",
     "/api/repositories/upload-zip",
     "/api/repositories/index",
@@ -32,7 +33,7 @@ class SearchTestRequestHandler(SimpleHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:
-        if self.path == "/api/health":
+        if self.path in {"/api/health", "/api/repositories"}:
             self._forward_api_request("GET")
             return
         super().do_GET()

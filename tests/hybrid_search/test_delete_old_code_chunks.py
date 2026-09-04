@@ -4,7 +4,7 @@ from secval.infrastructure.opensearch import (
     CODE_INDEX_NAME,
     delete_old_code_chunks,
 )
-from secval.shared_types import RepositoryId, SnapshotId
+from secval.models.identifiers import RepositoryId, SnapshotId
 
 
 def test_delete_only_chunks_from_an_older_index_run() -> None:

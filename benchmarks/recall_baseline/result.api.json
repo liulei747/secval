@@ -1,0 +1,617 @@
+{
+  "query": "用户登录",
+  "model": "glm-5.3-flash",
+  "candidate_count": 100,
+  "timeout_seconds": 180,
+  "max_tokens": 8192,
+  "diagnostic": {
+    "finish_reason": "stop",
+    "content_characters": 303,
+    "reasoning_characters": 21148,
+    "ranking_count": 100
+  },
+  "results": [
+    {
+      "rank": 1,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.login(HttpServletRequest,HttpServletResponse,Model)",
+      "chunk_id": "chunk_1e0b17f1c40fa6d90a18da974f98bec287086f0236a2671f27146587f3521e4b",
+      "original_rank": 63
+    },
+    {
+      "rank": 2,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.onLoginSuccess(AuthenticationToken,Subject,ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_426b117ff9501495e8898fbe74db28ac497fc7296944dbfdab8cbd0b3e19ddaa",
+      "original_rank": 17
+    },
+    {
+      "rank": 3,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.onAccessDenied(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_97b0cab6fee5444653744f3bd4972b999d91a3e6021e95e02e90d266161b9fa6",
+      "original_rank": 87
+    },
+    {
+      "rank": 4,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.executeLogin(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_afc76cf96919e91d719275b2a616b1341f835b7709addbf3d0e2b9feb53f7af3",
+      "original_rank": 36
+    },
+    {
+      "rank": 5,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.createToken(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_4540b37101178f2a3fa4ede343dff510e49783dfeffeff05de4f2b177bebf97f",
+      "original_rank": 52
+    },
+    {
+      "rank": 6,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.getPassword(ServletRequest)",
+      "chunk_id": "chunk_2e48443ccccc9d4832c40f4eac10ce8f028ab4600a9700cdd8ca634da41293bb",
+      "original_rank": 72
+    },
+    {
+      "rank": 7,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.getUsername(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_c0e3639babbba17eaf2cd813af082282eb68dacfd4f328eb9a0873f021641fd9",
+      "original_rank": 8
+    },
+    {
+      "rank": 8,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.index(HttpServletRequest,HttpServletResponse,Model)",
+      "chunk_id": "chunk_7c0406584581f55670ae7b048cc324130bebc89cddc6ad615ab6abe38c62065c",
+      "original_rank": 6
+    },
+    {
+      "rank": 9,
+      "symbol": "com.jeesite.common.shiro.realm.AuthorizingRealm.onLoginSuccess(LoginInfo,HttpServletRequest)",
+      "chunk_id": "chunk_db857e9414eb0deb4416777a7307cd0956c3e3a9f55872aef8a0b559adfa700c",
+      "original_rank": 1
+    },
+    {
+      "rank": 10,
+      "symbol": "com.jeesite.common.shiro.realm.AuthorizingRealm.getUserInfo(FormToken)",
+      "chunk_id": "chunk_ec16e98854a99d50390a7e70e42e3408b711900e8478fff1049aa454a317c080",
+      "original_rank": 4
+    },
+    {
+      "rank": 11,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.loginFailure(HttpServletRequest,HttpServletResponse,Model)",
+      "chunk_id": "chunk_38f70a2096532f512cfd288f5976226ca9c8acf16c3ebf562bab6f622424a81d",
+      "original_rank": 2
+    },
+    {
+      "rank": 12,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.onLoginSuccess(HttpServletRequest,HttpServletResponse)",
+      "chunk_id": "chunk_7c1617db47b9e3f579f677b52447c721c182a44c8d50dc69d3a3d00d952b5578",
+      "original_rank": 16
+    },
+    {
+      "rank": 13,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.loginByValidCode(String,String,HttpServletRequest,HttpServletResponse)",
+      "chunk_id": "chunk_94abe873a0210748c610502d26d813236e1b470b162281b94451b3b0d2a9d10e",
+      "original_rank": 11
+    },
+    {
+      "rank": 14,
+      "symbol": "com.jeesite.modules.sys.web.SsoController.sso(String,String,String,String,HttpServletRequest,HttpServletResponse,Model)",
+      "chunk_id": "chunk_7cc0e30cef7977b50e1e891c9198210a4dce72b57f46a384756616d31fbb8abb",
+      "original_rank": 15
+    },
+    {
+      "rank": 15,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.getCaptcha(ServletRequest)",
+      "chunk_id": "chunk_38da1edac307ae447038d08a20e5535d38295a490efc211230b68ccbc68d7de4",
+      "original_rank": 41
+    },
+    {
+      "rank": 16,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.onLoginFailure(AuthenticationToken,AuthenticationException,ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_8554f70188c8b30fea3a76f5192efc286710c80b9f292313a37609682637ac8a",
+      "original_rank": 33
+    },
+    {
+      "rank": 17,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.onLoginFailure(AuthenticationException,HttpServletRequest,HttpServletResponse)",
+      "chunk_id": "chunk_b2c83a839003153cbc07ad4d855346ad031ff876dbd206fd18d4f92bdcfe198a",
+      "original_rank": 19
+    },
+    {
+      "rank": 18,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.isLoginSubmission(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_3761dfc1f320b5e04498faa5ddf3fc9c1e9daf8aef6d62c1a385b2c82bc723fb",
+      "original_rank": 27
+    },
+    {
+      "rank": 19,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.isLoginRequest(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_0312e317e665b142df4de7410b61fc1d4a3151c7c991bea340d819e398b3fa7d",
+      "original_rank": 23
+    },
+    {
+      "rank": 20,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.isAccessAllowed(ServletRequest,ServletResponse,Object)",
+      "chunk_id": "chunk_77b87646384bde40d31d49ef0176919287af8c0452da06b074a6114349725f0b",
+      "original_rank": 51
+    },
+    {
+      "rank": 21,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.getLoginFailureData(HttpServletRequest,HttpServletResponse)",
+      "chunk_id": "chunk_036ba7c965097d35dece8b61817b15243f392a1d6e38340428084aebb0a07409",
+      "original_rank": 18
+    },
+    {
+      "rank": 22,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.getLoginSuccessData(HttpServletRequest,HttpServletResponse,User,Session)",
+      "chunk_id": "chunk_c6540b3741637e50b0302c5c1eee013bc8b3243d8b7fc1d9dc3eac8be5fedca2",
+      "original_rank": 65
+    },
+    {
+      "rank": 23,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.getLoginData(HttpServletRequest,HttpServletResponse)",
+      "chunk_id": "chunk_f9a6884bc7dc2e9320c77fed7217e84dffc25fc8c5e25b678c78406a795eb35a",
+      "original_rank": 22
+    },
+    {
+      "rank": 24,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.newToken(HttpServletRequest,HttpServletResponse)",
+      "chunk_id": "chunk_8f0328c60c414a3d86cfcd1dcd423f6e14011e1eb166f0f573c6d109e11be4fa",
+      "original_rank": 92
+    },
+    {
+      "rank": 25,
+      "symbol": "com.jeesite.modules.sys.web.LoginController",
+      "chunk_id": "chunk_643f85c158e5cb344fda5c0e45bbe8e9d786388e00fadbf2747cfbfbba347c55",
+      "original_rank": 5
+    },
+    {
+      "rank": 26,
+      "symbol": "com.jeesite.common.shiro.realm.CasAuthorizingRealm.onLoginSuccess(LoginInfo,HttpServletRequest)",
+      "chunk_id": "chunk_72942d20993ae2ff6fdb214ea45eacae2a3c1e3a2811ec3298ba9b80834c5ba7",
+      "original_rank": 7
+    },
+    {
+      "rank": 27,
+      "symbol": "com.jeesite.common.shiro.realm.LdapAuthorizingRealm.onLoginSuccess(LoginInfo,HttpServletRequest)",
+      "chunk_id": "chunk_df5d99fcbad1e553ef7aad4b136339be736fd3adf3ebcaf77fc3b54fe708763d",
+      "original_rank": 3
+    },
+    {
+      "rank": 28,
+      "symbol": "com.jeesite.common.shiro.filter.CasFilter.onLoginSuccess(AuthenticationToken,Subject,ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_5e1c0920462b7227a1d0fa8567903d883d16d8b8391ec5f85801827ded104beb",
+      "original_rank": 20
+    },
+    {
+      "rank": 29,
+      "symbol": "com.jeesite.common.shiro.realm.CasAuthorizingRealm.getFormToken(AuthenticationToken)",
+      "chunk_id": "chunk_a1cefd2b465dfa260b4817c858df10bfb1390b6016740903934fcd82809b0690",
+      "original_rank": 68
+    },
+    {
+      "rank": 30,
+      "symbol": "com.jeesite.common.shiro.realm.LdapAuthorizingRealm.getUserInfo(FormToken)",
+      "chunk_id": "chunk_f761d010daeadd04d113b3567a9b4b5b60e50f0f381d6fc43db6c282ffd6f66c",
+      "original_rank": 97
+    },
+    {
+      "rank": 31,
+      "symbol": "com.jeesite.common.shiro.filter.LdapFilter.createToken(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_7a820bf2d0ad5b7688aed65677198291d82b602a894f29c8c4ab016a5ec05fbf",
+      "original_rank": 38
+    },
+    {
+      "rank": 32,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.getLoginValidCode(String,String,String,HttpServletRequest)",
+      "chunk_id": "chunk_589686ffa486997512f75ff679a7c3bf131450dc6656be7e9479e66d88373ded",
+      "original_rank": 14
+    },
+    {
+      "rank": 33,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.getValidCode(String,String,String,String,String,HttpServletRequest,String)",
+      "chunk_id": "chunk_aa5e4325e6843b51eae04f05f45d128b275f952ecaf0ccb6e0d67991f7555417",
+      "original_rank": 88
+    },
+    {
+      "rank": 34,
+      "symbol": "com.jeesite.modules.sys.web.SsoController",
+      "chunk_id": "chunk_b11a11049e93044967b4f450d073222f0dcfb74faab137f51e5648876ed7cb7b",
+      "original_rank": 28
+    },
+    {
+      "rank": 35,
+      "symbol": "com.jeesite.autoconfigure.core.ShiroAutoConfiguration.shiroAuthcFilter(AuthorizingRealm)",
+      "chunk_id": "chunk_4ee902d0e2e88a72cf519da51d7e95e919b329fefa1a40179cf47103fd03db2c",
+      "original_rank": 91
+    },
+    {
+      "rank": 36,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.redirectToLogin(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_3c16bb9d2fb5399ca48223b8ced9fc9773d6897fb84785b0ac01771e78e4ff64",
+      "original_rank": 40
+    },
+    {
+      "rank": 37,
+      "symbol": "com.jeesite.common.shiro.filter.UserFilter.redirectToLogin(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_21109a18002e919c939f255921ba10bbacefe7227060f503b266408a34e0c455",
+      "original_rank": 57
+    },
+    {
+      "rank": 38,
+      "symbol": "com.jeesite.modules.sys.utils.LogUtils.saveLog(User,HttpServletRequest,String,String)",
+      "chunk_id": "chunk_7109a6291eddbceb99e3594788e975f9a7eb11880f7f1a5d067ae341b820bd29",
+      "original_rank": 83
+    },
+    {
+      "rank": 39,
+      "symbol": "com.jeesite.modules.sys.entity.Log.TYPE_LOGIN_LOGOUT",
+      "chunk_id": "chunk_019d174a742be46a3769b3783b6287e6172d59d06b260da718d0719da6ac4649",
+      "original_rank": 93
+    },
+    {
+      "rank": 40,
+      "symbol": "com.jeesite.common.shiro.filter.LogoutFilter.preHandle(ServletRequest,ServletResponse)",
+      "chunk_id": "chunk_26a7c2b4f72773f4d64d0fc3bd23eea54f55fd2ec9d3eaaf475fc456bd41ed9a",
+      "original_rank": 62
+    },
+    {
+      "rank": 41,
+      "symbol": "com.jeesite.common.shiro.realm.AuthorizingRealm.onLogoutSuccess(LoginInfo,HttpServletRequest)",
+      "chunk_id": "chunk_a27bd8a56cdbe869dc2ed9a38fbf83c0d78db70d4a6a1a4456e35c8d91ad0fd0",
+      "original_rank": 29
+    },
+    {
+      "rank": 42,
+      "symbol": "com.jeesite.common.shiro.realm.CasAuthorizingRealm.onLogoutSuccess(LoginInfo,HttpServletRequest)",
+      "chunk_id": "chunk_65f79fed7024ebf5bdc552de65843d75dd1a6d364e9511a1e9465a6ef1867c67",
+      "original_rank": 31
+    },
+    {
+      "rank": 43,
+      "symbol": "com.jeesite.common.shiro.realm.LdapAuthorizingRealm.onLogoutSuccess(LoginInfo,HttpServletRequest)",
+      "chunk_id": "chunk_4061faa70c3d43b9136628564fa2f96869c0fc4e59d7efdbc0c6c174ad053f36",
+      "original_rank": 32
+    },
+    {
+      "rank": 44,
+      "symbol": "com.jeesite.modules.FastApplication.JeeSiteController.login()",
+      "chunk_id": "chunk_0ace114b241e6d649233a8a88b0a96e00c19d0b881e1c09a2a1d54f751c83a84",
+      "original_rank": 61
+    },
+    {
+      "rank": 45,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.redirectUrl(HttpServletRequest,HttpServletResponse,String)",
+      "chunk_id": "chunk_7b516fba4cbfdca53c432a70c239e4655db8e35aab80cd88aa8e3f8e11aeee35",
+      "original_rank": 71
+    },
+    {
+      "rank": 46,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.LOGIN_PARAM",
+      "chunk_id": "chunk_fdb16ebc6551b33268dedb1dea06df5c1e4067dc6781d7734e98dd691c32c99c",
+      "original_rank": 85
+    },
+    {
+      "rank": 47,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.REMEMBER_USERCODE_PARAM",
+      "chunk_id": "chunk_916ce1d21d490447538b966a218af9e822c4b815fc2afeef00df4bdd6a0a0521",
+      "original_rank": 21
+    },
+    {
+      "rank": 48,
+      "symbol": "com.jeesite.common.shiro.filter.FormFilter.POST_ROLE_PERMI",
+      "chunk_id": "chunk_0b39c43e8c5bdffdc08328084e5477b17a69a5004cb940dce6858d881f4a17a0",
+      "original_rank": 84
+    },
+    {
+      "rank": 49,
+      "symbol": "com.jeesite.test.MobileAppTest.loginUrl",
+      "chunk_id": "chunk_821670d03147cc14e92df22e964e6b019ceb4bda2dbbc8fb648c2f342e8b373b",
+      "original_rank": 12
+    },
+    {
+      "rank": 50,
+      "symbol": "com.jeesite.test.MobileAppTest.refreshSid()",
+      "chunk_id": "chunk_cf4bc42d06acc0c2a7d4f14289e588abea63f13aed2fc70c680aa4dc4cc909ed",
+      "original_rank": 96
+    },
+    {
+      "rank": 51,
+      "symbol": "com.jeesite.autoconfigure.core.ShiroAutoConfiguration.shiroCasFilter(CasAuthorizingRealm)",
+      "chunk_id": "chunk_de0c3d6bf8243bd1daac6be024675baace373555d77e0662d8db48d66cd5638e",
+      "original_rank": 89
+    },
+    {
+      "rank": 52,
+      "symbol": "com.jeesite.autoconfigure.core.ShiroAutoConfiguration.shiroLdapFilter(LdapAuthorizingRealm)",
+      "chunk_id": "chunk_5f141f09aafd53a54ad06e9e29920bdff967181c283e207a6d4bb71a97b5ccef",
+      "original_rank": 90
+    },
+    {
+      "rank": 53,
+      "symbol": "com.jeesite.autoconfigure.core.ShiroAutoConfiguration.casOutHandler()",
+      "chunk_id": "chunk_838a5d8ed08a2cb38d4573a86c65b5bb1ad29b13208d45127751ee93470755e2",
+      "original_rank": 60
+    },
+    {
+      "rank": 54,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.infoSavePwd(String,String,String)",
+      "chunk_id": "chunk_a9379c3a389c73c785f6f05212e2a7f525cd64473820c1a52a5ed1ff62c440ce",
+      "original_rank": 34
+    },
+    {
+      "rank": 55,
+      "symbol": "com.jeesite.modules.sys.web.user.EmpUserController.resetpwd(EmpUser,String)",
+      "chunk_id": "chunk_234db0d35ad352f417c4fdfbd3b54086a7c5cf47b89f57cd7f1f278bb8d66bba",
+      "original_rank": 30
+    },
+    {
+      "rank": 56,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.checkLoginCode(String,String)",
+      "chunk_id": "chunk_3f1ad8f9fff08e7f13851c1e0e8280d0f2c3bbca713da3961df57a362d688fba",
+      "original_rank": 10
+    },
+    {
+      "rank": 57,
+      "symbol": "com.jeesite.modules.ai.tools.impl.UserAiTools.getCurrentUser()",
+      "chunk_id": "chunk_f50c413c26e13127f86840a6bc64cccbb42bd91d0ff0cbf7dbe4e80ce723e475",
+      "original_rank": 9
+    },
+    {
+      "rank": 58,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.registerUser(User,HttpServletRequest)",
+      "chunk_id": "chunk_456c13440c31b9eebc464c0524253d21dede935a7ecf0397db91ad9f133777c7",
+      "original_rank": 13
+    },
+    {
+      "rank": 59,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.saveRegByValidCode(User,String,HttpServletRequest)",
+      "chunk_id": "chunk_21a1c7ee3c64711fb5b46441b33146b6eebb0a269c25c639a85ca711dfc5bc2a",
+      "original_rank": 25
+    },
+    {
+      "rank": 60,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.getRegValidCode(User,String,String,HttpServletRequest)",
+      "chunk_id": "chunk_ad5fce2e26478751a95fd7bdbc642d638b37b5416405b8ebb018502e2ff2360e",
+      "original_rank": 44
+    },
+    {
+      "rank": 61,
+      "symbol": "com.jeesite.modules.sys.utils.EmpUtils.getByLoginCode(String)",
+      "chunk_id": "chunk_9c08725d3ac38b41c1de81f0dce97310c68451761eb44d1f1671e3cf3a1176ca",
+      "original_rank": 26
+    },
+    {
+      "rank": 62,
+      "symbol": "com.jeesite.modules.sys.web.user.EmpUserController.save(EmpUser,String,HttpServletRequest)",
+      "chunk_id": "chunk_6c81d06831653871e87125ab1fb965755480f16f6b5b340f3420ac7f5b8b0ae9",
+      "original_rank": 24
+    },
+    {
+      "rank": 63,
+      "symbol": "com.jeesite.modules.sys.web.user.EmpUserController.enable(EmpUser,boolean)",
+      "chunk_id": "chunk_c2cbdabeee9b488bb215f2b0ad250e720bac1b597989b5e58790a8691cf0fa00",
+      "original_rank": 49
+    },
+    {
+      "rank": 64,
+      "symbol": "com.jeesite.modules.sys.web.user.EmpUserController.disable(EmpUser,boolean)",
+      "chunk_id": "chunk_9f9ef8b69a95bb96a2567bb6e6d65177d822464a905b53690fc62408aea9e644",
+      "original_rank": 99
+    },
+    {
+      "rank": 65,
+      "symbol": "com.jeesite.modules.sys.web.user.CorpAdminController.disable(User)",
+      "chunk_id": "chunk_db100894168d4559edb66612a303c6c90a2a893d8f0ab6cee985070f6e7b60f8",
+      "original_rank": 100
+    },
+    {
+      "rank": 66,
+      "symbol": "com.jeesite.modules.sys.web.user.CorpAdminController.save(User,String,HttpServletRequest)",
+      "chunk_id": "chunk_60f2fb2c950b7c82e7caf8226b3195469eb70a2e24b3983c768716bd2dfa712c",
+      "original_rank": 78
+    },
+    {
+      "rank": 67,
+      "symbol": "com.jeesite.modules.sys.service.support.EmpUserServiceSupport.save(EmpUser)",
+      "chunk_id": "chunk_8a21f31ca29de2ab7846657718bc239898473cacdb9db60609d74f713fa4ab91",
+      "original_rank": 69
+    },
+    {
+      "rank": 68,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.desktop(HttpServletRequest,HttpServletResponse,Model)",
+      "chunk_id": "chunk_c75fd6ff58210095d865e0d29861e1a824a1119748aed680993e55e80397055c",
+      "original_rank": 53
+    },
+    {
+      "rank": 69,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.authInfo()",
+      "chunk_id": "chunk_bd4b369451f7ec57018e794cef5bc983361d7eeb037720dd2e3fc6e855ce3299",
+      "original_rank": 75
+    },
+    {
+      "rank": 70,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.menuTree(String)",
+      "chunk_id": "chunk_41bb37639c9cb515dbd4119dd1d09295087f28dc51b96658a544acee082f70de",
+      "original_rank": 77
+    },
+    {
+      "rank": 71,
+      "symbol": "com.jeesite.modules.sys.web.LoginController.menuRoute(String)",
+      "chunk_id": "chunk_ec6d7093f8100d6c94139c7f102cc03df4ec042bc866aaf9e3a20832dd1985f5",
+      "original_rank": 73
+    },
+    {
+      "rank": 72,
+      "symbol": "com.jeesite.modules.sys.utils.EmpUtils.getCurrentOfficeCode()",
+      "chunk_id": "chunk_626c796a8c4c3b7beaea32687ffa57859558b69e3733a9f30bd467eb7e3326b6",
+      "original_rank": 74
+    },
+    {
+      "rank": 73,
+      "symbol": "com.jeesite.modules.sys.utils.EmpUtils.getCurrentOfficeName()",
+      "chunk_id": "chunk_0e736d740b05c1ba4200adc56fb2275ac2afc8a32e520d05d3d51d90d7fea652",
+      "original_rank": 76
+    },
+    {
+      "rank": 74,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.info(String,Model)",
+      "chunk_id": "chunk_c8328ddfa011f6b9226ea43cd61581715d14fd11a32c4ec48d45a728f207460a",
+      "original_rank": 80
+    },
+    {
+      "rank": 75,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.infoSaveBase(User)",
+      "chunk_id": "chunk_8f9833b15d6faa857b87aae38858ff1c0eeb12aab1a990176ea4658852f85d53",
+      "original_rank": 86
+    },
+    {
+      "rank": 76,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.listData(User,HttpServletRequest,HttpServletResponse)",
+      "chunk_id": "chunk_656ccdb91c03b33c4075ebd915c258db6c4ad0d067c5a66545ddcb10bf8e662c",
+      "original_rank": 64
+    },
+    {
+      "rank": 77,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.userSelect(User,String,Model)",
+      "chunk_id": "chunk_5da173ee92639814a519333426f957b8ba270fc0f65b2aaf8a24cb1e34c72c52",
+      "original_rank": 59
+    },
+    {
+      "rank": 78,
+      "symbol": "com.jeesite.modules.sys.web.user.EmpUserController.importTemplate(HttpServletResponse)",
+      "chunk_id": "chunk_9e37ab8445b066a4539d16dd4d97a55199b3b9aa60efee9d9fe0eaa1dfe6455b",
+      "original_rank": 58
+    },
+    {
+      "rank": 79,
+      "symbol": "com.jeesite.modules.sys.web.user.EmpUserController",
+      "chunk_id": "chunk_cb4a6cfa7e06c065fa28a51bba1fac06fbbb0f944b12685592d0303435456789",
+      "original_rank": 47
+    },
+    {
+      "rank": 80,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController",
+      "chunk_id": "chunk_4bca7d756f6c9f321423dddf76b5f26deac606da52a8ce8e65082a3ad4c375c4",
+      "original_rank": 50
+    },
+    {
+      "rank": 81,
+      "symbol": "com.jeesite.modules.sys.entity.Log.TYPE_ACCESS",
+      "chunk_id": "chunk_06679dd77df0a8a951f452c341d97f587d92b1f00c7233206defd5894ffbb6a1",
+      "original_rank": 35
+    },
+    {
+      "rank": 82,
+      "symbol": "modules/core/src/main/java/com/jeesite/modules/sys/web/LoginController.java",
+      "chunk_id": "chunk_85254c67cfd1881c504580a3fc415a796dc7eb2066bae7e0f077f967d98cb171",
+      "original_rank": 43
+    },
+    {
+      "rank": 83,
+      "symbol": "modules/core/src/main/java/com/jeesite/modules/sys/web/AccountController.java",
+      "chunk_id": "chunk_7c2cec0fe23332cd2cfbf0564ecc752849d5dd1508032a56820beb821b74df44",
+      "original_rank": 67
+    },
+    {
+      "rank": 84,
+      "symbol": "com.jeesite.modules.ai.tools.local.LocalUserAiTools.findEmpUserInfo(String)",
+      "chunk_id": "chunk_f18b75486b6ab2f04046cc130035d3d335395e3a9b57d202079188a0f1b6a0e1",
+      "original_rank": 46
+    },
+    {
+      "rank": 85,
+      "symbol": "com.jeesite.modules.ai.tools.mcp.McpUserAiTools.findEmpUserInfo(String)",
+      "chunk_id": "chunk_6a865be61da25c6fa71f0c06cf5f50bb133e28e883ceee6e8d111185bafc6f67",
+      "original_rank": 48
+    },
+    {
+      "rank": 86,
+      "symbol": "com.jeesite.modules.ai.tools.impl.UserAiTools.findEmpUserInfo(String)",
+      "chunk_id": "chunk_67ce2211746ef862274b99dd3f3a950d50c04cf437f0d15da32e80d991031dae",
+      "original_rank": 94
+    },
+    {
+      "rank": 87,
+      "symbol": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/UserController.java",
+      "chunk_id": "chunk_970cdfbdeb272b344aeff3113a122279a04f58e77e89c1f3a596a49a581bd932",
+      "original_rank": 54
+    },
+    {
+      "rank": 88,
+      "symbol": "modules/core/src/main/java/com/jeesite/modules/sys/web/user/EmpUserController.java",
+      "chunk_id": "chunk_3e4d75d59e9852353a6bd03f5aabb0d6cfcf45f679fdfd197100b77c80e14725",
+      "original_rank": 95
+    },
+    {
+      "rank": 89,
+      "symbol": "modules/core/src/main/java/com/jeesite/common/shiro/filter/UserFilter.java",
+      "chunk_id": "chunk_5f0b4be222b6488f5dbd9354873a78d3a24f860d0fe607baaf681520f432a1dd",
+      "original_rank": 98
+    },
+    {
+      "rank": 90,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.UserController(UserService)",
+      "chunk_id": "chunk_9e84c32198c27de0df2dc3901fde43a27836e7d8da2a63c934c9f70936ce04f8",
+      "original_rank": 37
+    },
+    {
+      "rank": 91,
+      "symbol": "com.jeesite.modules.sys.web.user.UserController.userService",
+      "chunk_id": "chunk_e6abbf9a734401f9b890d741462f5dfb694e3965a039e61d4391dfdfad2219df",
+      "original_rank": 39
+    },
+    {
+      "rank": 92,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.userService",
+      "chunk_id": "chunk_2caf7c262d40ab6ec440435377c90c6d1d1f4c6ceb59dcbb1179356a896819dc",
+      "original_rank": 45
+    },
+    {
+      "rank": 93,
+      "symbol": "com.jeesite.modules.sys.web.AccountController.AccountController(UserService)",
+      "chunk_id": "chunk_3e1c4ad714e8537c2341997d3cebfd9d9245b253df735d185ca01b1762994891",
+      "original_rank": 56
+    },
+    {
+      "rank": 94,
+      "symbol": "com.jeesite.modules.sys.web.user.EmpUserController.userService",
+      "chunk_id": "chunk_38c2256ed81039b683c4bac1fc6490209e1ecddc4eaa952dae6e183e81be0fdd",
+      "original_rank": 79
+    },
+    {
+      "rank": 95,
+      "symbol": "com.jeesite.modules.sys.web.user.SecAdminController.userService",
+      "chunk_id": "chunk_f54491d12b99e0164fe6b977e17ef25f20a0604eb9bb36ab7dab959b0f6b2ea0",
+      "original_rank": 82
+    },
+    {
+      "rank": 96,
+      "symbol": "com.jeesite.modules.sys.entity.Log.deviceName",
+      "chunk_id": "chunk_47ea8ec8000efa6e3c4283f48e6da72d8caf2125193dc3803ebd5b559d4b424b",
+      "original_rank": 42
+    },
+    {
+      "rank": 97,
+      "symbol": "com.jeesite.modules.sys.entity.Log.userAgent",
+      "chunk_id": "chunk_38f8ee26c525795bd3c44c60bb1aba05904f8a86254a15e0d8a787ad4f965ac5",
+      "original_rank": 66
+    },
+    {
+      "rank": 98,
+      "symbol": "com.jeesite.modules.sys.entity.Log.setUserAgent(String)",
+      "chunk_id": "chunk_33d9958081d98a8319643aea50bf48968f3d31d9c587e4a2ce07a861131630ad",
+      "original_rank": 70
+    },
+    {
+      "rank": 99,
+      "symbol": "com.jeesite.modules.sys.entity.Log.getUserAgent()",
+      "chunk_id": "chunk_1ac426b1df3485fe9942d78ab23c1a3f1b90147382c4b1e3bce11b236b7d6cb9",
+      "original_rank": 81
+    },
+    {
+      "rank": 100,
+      "symbol": "com.jeesite.modules.sys.entity.Post.getUserCode()",
+      "chunk_id": "chunk_aa218c875d6f7293c8bfcf999c144d996ee06eab3aba04bf297e9c5d4b162a5f",
+      "original_rank": 55
+    }
+  ],
+  "status": "success",
+  "seconds": 109.126
+}

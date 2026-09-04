@@ -9,7 +9,7 @@ import yaml
 SUPPORTED_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 SUPPORTED_EMBEDDING_DIMENSION = 1024
 SUPPORTED_EMBEDDING_PROVIDERS = {"local", "api"}
-SUPPORTED_RERANKER_PROVIDERS = {"none", "local"}
+SUPPORTED_RERANKER_PROVIDERS = {"none", "local", "api"}
 
 
 @dataclass
@@ -94,8 +94,8 @@ class RerankerSettings:
 
     def __post_init__(self) -> None:
         if self.provider not in SUPPORTED_RERANKER_PROVIDERS:
-            raise ValueError("Reranker provider只能是none或local")
-        if self.provider == "local" and not self.model_name.strip():
+            raise ValueError("Reranker provider只能是none、local或api")
+        if self.provider != "none" and not self.model_name.strip():
             raise ValueError("本地Reranker模型名称不能为空")
         if not self.device.strip():
             raise ValueError("Reranker运行设备不能为空")

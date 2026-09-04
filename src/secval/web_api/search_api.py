@@ -16,17 +16,30 @@ from fastapi import (
     UploadFile,
     status,
 )
+from opensearchpy.exceptions import OpenSearchException
 from pydantic import BaseModel, Field
 
+from secval.bootstrap.audit_runtime import (
+    create_audit_service,
+    create_source_snapshot_store,
+)
 from secval.bootstrap.search_runtime import (
     SearchRuntime,
     create_search_runtime,
 )
+from secval.infrastructure.opensearch.repository_catalog import (
+    list_indexed_repositories,
+)
 from secval.infrastructure.qdrant import CODE_VECTOR_COLLECTION
 from secval.models.code import CodeRepository, CodeSnapshot
+from secval.models.identifiers import RepositoryId, SnapshotId
 from secval.models.search import SearchQuery, SearchResult
 from secval.services import index_repository
-from secval.shared_types import RepositoryId, SnapshotId
+from secval.services.repository_operation import (
+    RepositoryBusyError,
+    repository_operation,
+)
+from secval.web_api.audit_api import router as audit_router
 from secval.web_api.repository_upload import (
     UploadRepositoryResponse,
     save_uploaded_repository,
@@ -44,6 +57,16 @@ class SearchRequest(BaseModel):
     language: str | None = None
     path_prefix: str | None = None
     chunk_type: str | None = None
+
+
+class IndexedRepositoryResponse(BaseModel):
+    repository_id: str
+    snapshot_id: str
+    chunk_count: int
+
+
+class RepositoryCatalogResponse(BaseModel):
+    repositories: list[IndexedRepositoryResponse]
 
 
 class SearchResultResponse(BaseModel):
@@ -134,7 +157,10 @@ def create_search_app(
 
         app.state.search_runtime = active_runtime
         app.state.index_lock = Lock()
+        app.state.source_snapshot_store = create_source_snapshot_store()
+        app.state.audit_service = create_audit_service(active_runtime.open_search_connection)
         yield
+        app.state.audit_service.close()
 
         if owns_runtime:
             active_runtime.open_search_connection.transport.close()
@@ -186,6 +212,22 @@ def create_search_app(
             reranker_model=active_runtime.reranker.model_name,
         )
 
+    @app.get("/api/repositories", response_model=RepositoryCatalogResponse)
+    def repository_catalog(request: Request) -> RepositoryCatalogResponse:
+        """枚举当前文本索引中的仓库/快照，不读取密钥或源代码正文。"""
+
+        active_runtime: SearchRuntime = request.app.state.search_runtime
+        try:
+            scopes = list_indexed_repositories(active_runtime.open_search_connection)
+        except (OpenSearchException, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="读取已索引仓库失败，请检查OpenSearch后刷新",
+            ) from error
+        return RepositoryCatalogResponse(
+            repositories=[IndexedRepositoryResponse(**scope) for scope in scopes]
+        )
+
     @app.post("/api/search", response_model=SearchResponse)
     def search(
         search_request: SearchRequest,
@@ -226,13 +268,13 @@ def create_search_app(
         """接收浏览器选择的代码目录，并保存到 repositories 根目录。"""
 
         try:
-            with request.app.state.index_lock:
+            with repository_operation(request.app.state.index_lock):
                 result = save_uploaded_repository(
                     repository_directory=repository_directory,
                     uploaded_files=files,
                     replace_existing=replace_existing,
                 )
-        except FileExistsError as error:
+        except (FileExistsError, RepositoryBusyError) as error:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(error),
@@ -262,13 +304,13 @@ def create_search_app(
         """接收 ZIP 代码仓库，安全解压后保存到 repositories 根目录。"""
 
         try:
-            with request.app.state.index_lock:
+            with repository_operation(request.app.state.index_lock):
                 result = save_uploaded_zip(
                     repository_directory=repository_directory,
                     uploaded_zip=zip_file,
                     replace_existing=replace_existing,
                 )
-        except FileExistsError as error:
+        except (FileExistsError, RepositoryBusyError) as error:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(error),
@@ -311,7 +353,7 @@ def create_search_app(
             )
 
             # 同一进程一次只执行一个导入，避免两个批次交叉清理数据。
-            with request.app.state.index_lock:
+            with repository_operation(request.app.state.index_lock):
                 result = index_repository(
                     open_search_connection=(
                         active_runtime.open_search_connection
@@ -320,7 +362,10 @@ def create_search_app(
                     embedding_model=active_runtime.embedding_model,
                     repository=repository,
                     snapshot=snapshot,
+                    source_store=request.app.state.source_snapshot_store,
                 )
+        except RepositoryBusyError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
         except (ValueError, OSError) as error:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -346,6 +391,7 @@ def create_search_app(
             ],
         )
 
+    app.include_router(audit_router)
     return app
 
 

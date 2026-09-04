@@ -2,9 +2,9 @@ from unittest.mock import MagicMock
 
 from secval.infrastructure.reranker import NoopReranker
 from secval.interfaces import RerankerError
+from secval.models.identifiers import RepositoryId, SnapshotId
 from secval.models.search import SearchQuery
 from secval.services.search_service import SearchService
-from secval.shared_types import RepositoryId, SnapshotId
 
 
 def test_run_complete_hybrid_search_flow() -> None:

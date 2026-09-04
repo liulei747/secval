@@ -1,7 +1,7 @@
 import pytest
 
-from secval.shared_types import ChunkId, RepositoryId
-from secval.shared_types.resource_ids import require_resource_id
+from secval.models.identifiers import ChunkId, RepositoryId
+from secval.models.identifiers.resource_ids import require_resource_id
 
 
 def test_resource_ids_keep_the_original_string_value() -> None:

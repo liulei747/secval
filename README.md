@@ -1,5 +1,12 @@
 # Secval
 
+## 架构与后续实施
+
+- [审计架构与实施基线](docs/audit-architecture-plan.md)：参考Codex Security的方法、目标流程、现状、阶段验收与决策记录。
+- [当前只读审计原型](docs/audit-agent.md)：已实现接口、配置和限制。
+
+后续审计功能开发先核对上述文档。目标为独立Web审计应用，当前原型不等于完整审计系统。
+
 ## 使用远程 Embedding API
 
 搜索服务默认继续使用本地 `Qwen/Qwen3-Embedding-0.6B`。如果要改用 OpenAI
@@ -30,8 +37,8 @@ Docker搜索链路还会使用本地 `BAAI/bge-reranker-base` CrossEncoder 对RR
 - `infrastructure`：使用OpenSearch、Qdrant、Embedding模型、RRF和CrossEncoder实现上述能力。
 - `bootstrap`：读取配置、创建连接和模型，并把具体实现注入业务服务。
 - `code_processing`：扫描、解析、切分源代码以及生成可索引代码块。
-- `shared_config`：全项目共享配置。
-- `shared_types`：多个板块共同使用的资源ID等基础类型。
+- `config`：各模块的配置数据类型、读取和校验代码。
+- `models/identifiers`：仓库、版本、文件、代码块和符号的强类型ID及生成规则。
 
 正式搜索依赖方向固定为：
 
@@ -110,6 +117,11 @@ Invoke-RestMethod `
 上传接口先写临时目录，全部文件保存成功后才替换正式目录；默认不会覆盖已有仓库。
 
 ### 搜索
+
+`GET /api/repositories`返回当前OpenSearch文本索引中实际存在的仓库/快照组合，
+以及各组合的`chunk_count`。列表不把仅上传未建索引的目录当成可查询仓库，
+也不表示当前Embedding API或向量索引一定可用。
+测试前端的搜索区可以刷新并选择这些组合，搜索范围不再读取左侧入库表单的默认值。
 
 ```powershell
 $body = @{

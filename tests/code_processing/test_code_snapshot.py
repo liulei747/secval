@@ -1,7 +1,7 @@
 import unittest
 
 from secval.models.code import CodeSnapshot
-from secval.shared_types import RepositoryId, SnapshotId
+from secval.models.identifiers import RepositoryId, SnapshotId
 
 
 class CodeSnapshotTest(unittest.TestCase):

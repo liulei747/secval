@@ -2,8 +2,8 @@ import pytest
 
 from secval.infrastructure.fusion import RRF_RANK_CONSTANT, fuse_with_rrf
 from secval.models.code import CodeChunk
+from secval.models.identifiers import ChunkId, FileId, RepositoryId, SnapshotId
 from secval.models.search import SearchResult
-from secval.shared_types import ChunkId, FileId, RepositoryId, SnapshotId
 
 
 def create_chunk(chunk_id: str) -> CodeChunk:

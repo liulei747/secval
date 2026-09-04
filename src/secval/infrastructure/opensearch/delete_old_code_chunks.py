@@ -3,7 +3,7 @@
 from opensearchpy import OpenSearch
 
 from secval.infrastructure.opensearch.code_index import CODE_INDEX_NAME
-from secval.shared_types import RepositoryId, SnapshotId
+from secval.models.identifiers import RepositoryId, SnapshotId
 
 
 def delete_old_code_chunks(

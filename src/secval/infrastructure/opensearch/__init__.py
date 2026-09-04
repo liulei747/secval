@@ -14,6 +14,7 @@ from .load_code_chunk import document_to_code_chunk, load_code_chunks_by_ids
 from .open_search_connection import create_open_search_connection
 from .save_code_chunk import code_chunk_to_document, save_code_chunk
 from .save_code_chunks import save_code_chunks
+from .search_text_validator import require_searchable_text
 
 __all__ = [
     "CODE_INDEX_NAME",
@@ -26,6 +27,7 @@ __all__ = [
     "delete_old_code_chunks",
     "document_to_code_chunk",
     "load_code_chunks_by_ids",
+    "require_searchable_text",
     "save_code_chunk",
     "save_code_chunks",
     "search_by_keywords",

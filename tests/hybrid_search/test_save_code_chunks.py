@@ -7,7 +7,7 @@ from secval.infrastructure.opensearch import (
     save_code_chunks,
 )
 from secval.models.code import CodeChunk
-from secval.shared_types import ChunkId, FileId, RepositoryId, SnapshotId
+from secval.models.identifiers import ChunkId, FileId, RepositoryId, SnapshotId
 
 
 def create_code_chunk(chunk_number: int) -> CodeChunk:

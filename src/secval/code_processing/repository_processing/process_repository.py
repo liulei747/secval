@@ -12,7 +12,7 @@ from secval.models.code import (
     FileProcessError,
     RepositoryProcessResult,
 )
-from secval.shared_types import (
+from secval.models.identifiers import (
     RepositoryId,
     SnapshotId,
     create_file_id,

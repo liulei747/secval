@@ -2,7 +2,7 @@
 
 from sentence_transformers import SentenceTransformer
 
-from secval.shared_config.search_settings import (
+from secval.config.search_settings import (
     SUPPORTED_EMBEDDING_DIMENSION,
     SUPPORTED_EMBEDDING_MODEL,
 )

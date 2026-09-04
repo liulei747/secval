@@ -3,7 +3,7 @@
 import hashlib
 import json
 
-from secval.shared_types.resource_ids import (
+from secval.models.identifiers.resource_ids import (
     ChunkId,
     FileId,
     RepositoryId,

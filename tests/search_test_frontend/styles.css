@@ -28,7 +28,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
     font: inherit;
 }
 
@@ -309,7 +310,8 @@ input[type="file"] {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
     border-color: var(--green);
     box-shadow: 0 0 0 3px rgba(83, 224, 161, 0.08);
 }

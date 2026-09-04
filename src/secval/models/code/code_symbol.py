@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from secval.shared_types import (
+from secval.models.identifiers import (
     FileId,
     RepositoryId,
     SnapshotId,

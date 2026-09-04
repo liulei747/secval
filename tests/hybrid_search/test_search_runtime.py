@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from secval.bootstrap.search_runtime import create_search_runtime
-from secval.shared_config import (
+from secval.config import (
     EmbeddingSettings,
     FusionSettings,
     RerankerSettings,

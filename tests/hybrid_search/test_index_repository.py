@@ -10,13 +10,13 @@ from secval.models.code import (
     FileProcessError,
     RepositoryProcessResult,
 )
-from secval.services import index_repository
-from secval.shared_types import (
+from secval.models.identifiers import (
     ChunkId,
     FileId,
     RepositoryId,
     SnapshotId,
 )
+from secval.services import index_repository
 
 DEFAULT_REPOSITORY_ID = RepositoryId("repository-1")
 
@@ -90,6 +90,10 @@ def test_index_repository_runs_the_complete_flow(
     process_result = create_process_result()
     vector = [0.0] * EMBEDDING_DIMENSION
     call_order: list[str] = []
+    source_store = MagicMock()
+    source_store.capture.return_value = "source-copy"
+    source_store.indexing_directory.return_value.__enter__.return_value = "private-copy"
+    source_store.bind.side_effect = lambda *args: call_order.append("bind_source")
     mock_create_code_index.return_value = True
     mock_create_vector_collection.return_value = True
     mock_process_repository.return_value = process_result
@@ -113,6 +117,12 @@ def test_index_repository_runs_the_complete_flow(
         embedding_model=embedding_model,
         repository=create_repository(),
         snapshot=create_snapshot(),
+        source_store=source_store,
+    )
+
+    assert mock_process_repository.call_args.kwargs["root_path"] == "private-copy"
+    source_store.bind.assert_called_once_with(
+        "source-copy", "repository-1", "snapshot-1", result.index_run_id,
     )
 
     mock_create_code_index.assert_called_once_with(open_search)
@@ -146,6 +156,7 @@ def test_index_repository_runs_the_complete_flow(
         "save_vectors",
         "delete_chunks",
         "delete_vectors",
+        "bind_source",
     ]
     assert result.saved_chunks == 1
     assert result.saved_vectors == 1

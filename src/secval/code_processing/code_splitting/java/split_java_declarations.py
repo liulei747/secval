@@ -9,7 +9,7 @@ from secval.code_processing.source_parsing.java.extract_java_symbols import (
     extract_java_symbol_nodes,
 )
 from secval.models.code import CodeChunk, SourceFile
-from secval.shared_types import create_chunk_id
+from secval.models.identifiers import create_chunk_id
 
 
 def split_java_declarations(

@@ -6,7 +6,7 @@ from opensearchpy import OpenSearch
 
 from secval.infrastructure.opensearch.code_index import CODE_INDEX_NAME
 from secval.models.code import CodeChunk
-from secval.shared_types import (
+from secval.models.identifiers import (
     ChunkId,
     FileId,
     RepositoryId,

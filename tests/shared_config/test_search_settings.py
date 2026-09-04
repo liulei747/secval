@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from secval.shared_config import load_search_settings
+from secval.config import load_search_settings
 
 
 def test_load_default_search_settings() -> None:

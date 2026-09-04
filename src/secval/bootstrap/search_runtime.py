@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from opensearchpy import OpenSearch
 from qdrant_client import QdrantClient
 
+from secval.config import SearchSettings, load_search_settings
 from secval.infrastructure.embedding import (
     ApiEmbeddingModel,
     LocalEmbeddingModel,
@@ -22,12 +23,12 @@ from secval.infrastructure.qdrant import (
     create_qdrant_connection,
 )
 from secval.infrastructure.reranker import (
+    ApiReranker,
     LocalReranker,
     NoopReranker,
 )
 from secval.interfaces import EmbeddingModel, Reranker
 from secval.services.search_service import SearchService
-from secval.shared_config import SearchSettings, load_search_settings
 
 
 @dataclass
@@ -124,11 +125,18 @@ def _create_embedding_model(settings: SearchSettings) -> EmbeddingModel:
 
 
 def _create_reranker(settings: SearchSettings) -> Reranker:
-    """创建关闭状态或本地CrossEncoder Reranker。"""
+    """创建关闭状态、本地CrossEncoder或独立API重排序器。"""
 
     config = settings.reranker
     if config.provider == "none":
         return NoopReranker()
+    if config.provider == "api":
+        return ApiReranker(
+            api_url=os.getenv("SECVAL_EMBEDDING_API_URL", ""),
+            api_key=os.getenv("SECVAL_EMBEDDING_API_KEY", ""),
+            model_name=config.model_name,
+            candidate_count=config.candidate_count,
+        )
     return LocalReranker(
         model_name=config.model_name,
         device=config.device,

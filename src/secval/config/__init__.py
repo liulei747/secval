@@ -1,4 +1,4 @@
-"""多个 Secval 板块共同使用的配置。"""
+"""Secval各模块的配置类型、读取和校验入口。"""
 
 from .search_settings import (
     EmbeddingSettings,

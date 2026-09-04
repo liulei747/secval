@@ -7,8 +7,8 @@ from qdrant_client.http import models
 from secval.infrastructure.opensearch import load_code_chunks_by_ids
 from secval.infrastructure.qdrant import CODE_VECTOR_COLLECTION
 from secval.interfaces import EmbeddingModel
+from secval.models.identifiers import ChunkId
 from secval.models.search import SearchQuery, SearchResult
-from secval.shared_types import ChunkId
 
 
 class QdrantVectorRetriever:

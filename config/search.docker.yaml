@@ -19,8 +19,9 @@ fusion:
   max_candidate_count: 100
 
 reranker:
-  provider: local
-  model_name: BAAI/bge-reranker-base
+  # 复用向量API地址和密钥，使用独立chat/completions请求排序。
+  provider: api
+  model_name: glm-5.3-flash
   device: cpu
   candidate_count: 10
   max_sequence_length: 256

@@ -1,6 +1,7 @@
 """处理代码仓库并建立关键词搜索索引。"""
 
 import logging
+from pathlib import Path
 from uuid import uuid4
 
 from opensearchpy import OpenSearch
@@ -22,6 +23,7 @@ from secval.infrastructure.qdrant import (
     save_code_vectors,
 )
 from secval.interfaces import EmbeddingModel
+from secval.interfaces.audit import SourceSnapshotPort
 from secval.models.code import (
     CodeChunk,
     CodeRepository,
@@ -41,6 +43,7 @@ def index_repository(
     embedding_model: EmbeddingModel,
     repository: CodeRepository,
     snapshot: CodeSnapshot,
+    source_store: SourceSnapshotPort | None = None,
 ) -> RepositoryIndexResult:
     """扫描仓库，并把代码块和向量写入两个搜索存储。"""
 
@@ -50,11 +53,22 @@ def index_repository(
     index_created = create_code_index(open_search_connection)
     vector_collection_created = create_code_vector_collection(qdrant_client)
 
-    process_result = process_repository(
-        root_path=repository.root_path,
-        repository_id=repository.repository_id,
-        snapshot_id=snapshot.snapshot_id,
-    )
+    source_snapshot_id = None
+    if source_store is not None:
+        source_snapshot_id = source_store.capture(
+            Path(repository.root_path), repository.repository_id, snapshot.version,
+        )
+        with source_store.indexing_directory(source_snapshot_id) as root:
+            process_result = process_repository(
+                root_path=root, repository_id=repository.repository_id,
+                snapshot_id=snapshot.snapshot_id,
+            )
+    else:
+        process_result = process_repository(
+            root_path=repository.root_path,
+            repository_id=repository.repository_id,
+            snapshot_id=snapshot.snapshot_id,
+        )
 
     if process_result.errors:
         error_summary = "; ".join(
@@ -84,6 +98,8 @@ def index_repository(
             vectors=vectors,
             index_run_id=index_run_id,
         )
+        if saved_chunks != len(process_result.chunks) or saved_vectors != len(process_result.chunks):
+            raise ValueError("索引写入数量不完整，本批次不能绑定源码快照")
     except Exception:
         # 两个存储没有跨库事务；失败时尽最大努力清掉本批次残留。
         try:
@@ -109,6 +125,10 @@ def index_repository(
         snapshot_id=snapshot.snapshot_id,
         current_index_run_id=index_run_id,
     )
+
+    if source_store is not None and source_snapshot_id is not None:
+        source_store.bind(source_snapshot_id, repository.repository_id,
+                          snapshot.snapshot_id, index_run_id)
 
     return RepositoryIndexResult(
         process_result=process_result,

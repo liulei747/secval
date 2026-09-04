@@ -14,6 +14,71 @@ const searchStatus = document.querySelector("#searchStatus");
 const resultSummary = document.querySelector("#resultSummary");
 const resultCards = document.querySelector("#resultCards");
 const rawJson = document.querySelector("#rawJson");
+const searchScope = document.querySelector("#searchScope");
+const scopeStatus = document.querySelector("#scopeStatus");
+const refreshRepositories = document.querySelector("#refreshRepositories");
+let repositoryScopes = [];
+let searching = false;
+const scopeStorageKey = "secval.searchScope";
+
+refreshRepositories.addEventListener("click", () => loadRepositories());
+searchScope.addEventListener("change", updateSelectedScope);
+
+function scopeKey(scope) {
+    return JSON.stringify([scope.repository_id, scope.snapshot_id]);
+}
+
+function selectedScope() {
+    return repositoryScopes.find((scope) => scopeKey(scope) === searchScope.value);
+}
+
+function updateSelectedScope() {
+    const scope = selectedScope();
+    searchButton.disabled = searching || !scope;
+    scopeStatus.textContent = scope
+        ? `仓库：${scope.repository_id} · 快照：${scope.snapshot_id} · 文本代码块 ${scope.chunk_count} 个。此选择独立于左侧入库表单；不代表远程向量服务可用。`
+        : "没有可查询仓库，请先完成索引或刷新列表。";
+    try {
+        if (scope) localStorage.setItem(scopeStorageKey, scopeKey(scope));
+    } catch { /* 浏览器禁用本地存储时仍可正常选择。 */ }
+}
+
+async function loadRepositories(preferredKey) {
+    let remembered = searchScope.value;
+    try { remembered ||= localStorage.getItem(scopeStorageKey); } catch { /* 可选持久化 */ }
+    searchScope.disabled = true;
+    searchButton.disabled = true;
+    refreshRepositories.disabled = true;
+    scopeStatus.textContent = "正在读取当前索引中的仓库和快照……";
+    try {
+        const response = await fetch("/api/repositories", {cache: "no-store"});
+        const body = await readResponseBody(response);
+        ensureSuccessfulResponse(response, body);
+        repositoryScopes = body.repositories;
+        searchScope.replaceChildren();
+        if (!repositoryScopes.length) {
+            searchScope.add(new Option("暂无已索引仓库", ""));
+        }
+        for (const scope of repositoryScopes) {
+            searchScope.add(new Option(
+                `${scope.repository_id} / ${scope.snapshot_id}（${scope.chunk_count} 块）`,
+                scopeKey(scope),
+            ));
+        }
+        const wanted = preferredKey || remembered;
+        if (repositoryScopes.some((scope) => scopeKey(scope) === wanted)) {
+            searchScope.value = wanted;
+        }
+        searchScope.disabled = !repositoryScopes.length;
+        updateSelectedScope();
+    } catch (error) {
+        repositoryScopes = [];
+        searchScope.replaceChildren(new Option("仓库列表加载失败", ""));
+        scopeStatus.textContent = `无法读取仓库：${error.message}。请点击刷新重试。`;
+    } finally {
+        refreshRepositories.disabled = false;
+    }
+}
 
 document.querySelector("#apiAddress").textContent = apiAddress;
 document.querySelector("#checkHealthButton").addEventListener("click", checkHealth);
@@ -72,6 +137,7 @@ async function indexRepository(event) {
             `生成 ${response.generated_chunks} 个代码块，写入文本 ${response.saved_chunks} 个、向量 ${response.saved_vectors} 个，清理旧块 ${response.deleted_chunks} 个。`,
         ].join("\n");
 
+        await loadRepositories(scopeKey(requestBody));
         // 搜索必须使用本次入库相同的仓库 ID 和快照 ID。
         searchStatus.className = "status-box empty";
         searchStatus.textContent = "入库已完成，可以模拟 LLM 搜索。";
@@ -160,12 +226,18 @@ async function uploadRepositoryZip(event) {
 
 async function searchCode(event) {
     event.preventDefault();
+    const scope = selectedScope();
+    if (!scope) {
+        showError(searchStatus, new Error("请先选择已索引仓库和快照"));
+        return;
+    }
+    searching = true;
     setWorkingState(searchButton, searchStatus, true, "LLM 正在调用混合搜索接口……");
 
     const requestBody = {
         text: valueOf("question"),
-        repository_ids: [valueOf("repositoryId")],
-        snapshot_ids: [valueOf("snapshotId")],
+        repository_ids: [scope.repository_id],
+        snapshot_ids: [scope.snapshot_id],
         top_k: Number(valueOf("topK")),
         language: optionalValueOf("language"),
         path_prefix: optionalValueOf("pathPrefix"),
@@ -175,13 +247,15 @@ async function searchCode(event) {
     try {
         const response = await sendJson("/api/search", requestBody);
         searchStatus.className = "status-box success";
-        searchStatus.textContent = `搜索完成，LLM 收到 ${response.result_count} 个代码块。`;
+        searchStatus.textContent = `搜索范围：${scope.repository_id} / ${scope.snapshot_id}。收到 ${response.result_count} 个代码块。`
+            + (response.result_count ? "" : " 可尝试清空语言、类型和路径过滤条件。注意：仓库名称不等于代码内容搜索词。");
         showSearchResults(response);
     } catch (error) {
         showError(searchStatus, error);
         clearSearchResults("搜索失败，没有可交给 LLM 的上下文。");
     } finally {
-        searchButton.disabled = false;
+        searching = false;
+        searchButton.disabled = !selectedScope();
         searchButton.textContent = "模拟 LLM 搜索";
     }
 }
@@ -324,3 +398,4 @@ function formatBytes(byteCount) {
 }
 
 checkHealth();
+loadRepositories();

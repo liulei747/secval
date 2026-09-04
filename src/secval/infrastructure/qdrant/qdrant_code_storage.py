@@ -11,7 +11,7 @@ from secval.models.code import (
     CodeChunk,
     require_unique_chunk_ids,
 )
-from secval.shared_types import ChunkId, RepositoryId, SnapshotId
+from secval.models.identifiers import ChunkId, RepositoryId, SnapshotId
 
 CODE_VECTOR_COLLECTION = os.getenv(
     "SECVAL_VECTOR_COLLECTION",

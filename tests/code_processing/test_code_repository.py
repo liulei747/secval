@@ -1,7 +1,7 @@
 import unittest
 
 from secval.models.code import CodeRepository
-from secval.shared_types import RepositoryId
+from secval.models.identifiers import RepositoryId
 
 
 class CodeRepositoryTest(unittest.TestCase):

@@ -4,7 +4,7 @@ from secval.code_processing.source_parsing.java import (
     parse_java,
 )
 from secval.models.code import SourceFile
-from secval.shared_types import FileId, RepositoryId, SnapshotId
+from secval.models.identifiers import FileId, RepositoryId, SnapshotId
 
 JAVA_SOURCE = """package demo;
 

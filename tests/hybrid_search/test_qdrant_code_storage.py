@@ -13,7 +13,7 @@ from secval.infrastructure.qdrant import (
     save_code_vectors,
 )
 from secval.models.code import CodeChunk
-from secval.shared_types import ChunkId, FileId, RepositoryId, SnapshotId
+from secval.models.identifiers import ChunkId, FileId, RepositoryId, SnapshotId
 
 
 def create_code_chunk(chunk_id: str = "chunk-1") -> CodeChunk:

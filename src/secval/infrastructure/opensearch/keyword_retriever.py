@@ -4,10 +4,12 @@ from typing import Any
 
 from opensearchpy import OpenSearch
 
-from secval.code_processing.code_tokenizing.tokenize_code import tokenize_code
 from secval.infrastructure.opensearch import CODE_INDEX_NAME
 from secval.infrastructure.opensearch.load_code_chunk import (
     document_to_code_chunk,
+)
+from secval.infrastructure.opensearch.search_text_validator import (
+    require_searchable_text,
 )
 from secval.models.search import SearchQuery, SearchResult
 
@@ -56,9 +58,7 @@ def search_by_keywords(
 def build_keyword_search_body(query: SearchQuery) -> dict[str, Any]:
     """把 SearchQuery 转换成 OpenSearch 查询结构。"""
 
-    # 这里只判断是否含有可搜索内容；实际拆词全部交给 OpenSearch analyzer。
-    if len(tokenize_code(query.text)) == 0:
-        raise ValueError("搜索文本不包含可以搜索的文字或数字")
+    require_searchable_text(query.text)
 
     filters: list[dict[str, Any]] = [
         {"terms": {"repository_id": list(query.repository_ids)}},

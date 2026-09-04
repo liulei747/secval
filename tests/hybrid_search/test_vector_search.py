@@ -9,13 +9,13 @@ from secval.infrastructure.qdrant import (
     search_by_vector,
 )
 from secval.models.code import CodeChunk
-from secval.models.search import SearchQuery
-from secval.shared_types import (
+from secval.models.identifiers import (
     ChunkId,
     FileId,
     RepositoryId,
     SnapshotId,
 )
+from secval.models.search import SearchQuery
 
 
 def create_query() -> SearchQuery:

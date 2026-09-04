@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from secval.models.code import SourceFile
-from secval.shared_types import FileId, RepositoryId, SnapshotId
+from secval.models.identifiers import FileId, RepositoryId, SnapshotId
 
 # 默认最多读取 2 MiB，避免异常大文件占用过多内存。
 DEFAULT_MAX_FILE_SIZE = 2 * 1024 * 1024

@@ -11,6 +11,10 @@ services:
       - HF_HUB_DISABLE_XET=1
       - PYTHONUNBUFFERED=1
       - SECVAL_REPOSITORIES_ROOT=/repositories
+      - SECVAL_AUDIT_API_URL=${SECVAL_AUDIT_API_URL:-}
+      - SECVAL_AUDIT_API_KEY=${SECVAL_AUDIT_API_KEY:-}
+      - SECVAL_AUDIT_MODEL=${SECVAL_AUDIT_MODEL:-glm-5.3-flash}
+      - SECVAL_AUDIT_DB=/audit-data/tasks.sqlite3
       # 默认仍使用本地模型；在 .env 中设置为 api 即可切换远程向量服务。
       - SECVAL_EMBEDDING_PROVIDER=${SECVAL_EMBEDDING_PROVIDER:-local}
       - SECVAL_EMBEDDING_API_URL=${SECVAL_EMBEDDING_API_URL:-}
@@ -26,6 +30,7 @@ services:
     volumes:
       - ./config/search.docker.yaml:/app/config/search.yaml:ro
       - huggingface-cache:/models/huggingface
+      - audit-data:/audit-data
       # API 需要把浏览器上传的仓库保存到这个目录。
       - ./data/repositories:/repositories
     networks:
@@ -94,6 +99,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  audit-data:
   opensearch-data:
   qdrant-data:
   huggingface-cache:

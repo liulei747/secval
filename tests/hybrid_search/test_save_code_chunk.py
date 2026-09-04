@@ -6,7 +6,7 @@ from secval.infrastructure.opensearch import (
     save_code_chunk,
 )
 from secval.models.code import CodeChunk
-from secval.shared_types import (
+from secval.models.identifiers import (
     ChunkId,
     FileId,
     RepositoryId,
