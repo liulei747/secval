@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -16,7 +16,7 @@ from secval.models.identifiers import (
     RepositoryId,
     SnapshotId,
 )
-from secval.services import index_repository
+from secval.services.index_service import index_repository
 
 DEFAULT_REPOSITORY_ID = RepositoryId("repository-1")
 
@@ -154,9 +154,9 @@ def test_index_repository_runs_the_complete_flow(
     assert call_order == [
         "save_chunks",
         "save_vectors",
+        "bind_source",
         "delete_chunks",
         "delete_vectors",
-        "bind_source",
     ]
     assert result.saved_chunks == 1
     assert result.saved_vectors == 1
@@ -164,6 +164,45 @@ def test_index_repository_runs_the_complete_flow(
     assert result.index_created is True
     assert result.vector_collection_created is True
     assert result.index_run_id == index_run_id
+
+
+def test_mixed_repository_builds_one_joern_project_per_language() -> None:
+    process_result = create_process_result()
+    process_result.chunks.append(CodeChunk(
+        chunk_id=ChunkId("chunk-python"), file_id=FileId("file-python"),
+        repository_id=RepositoryId("repository-1"), snapshot_id=SnapshotId("snapshot-1"),
+        relative_path="service.py", language="python", chunk_type="function",
+        content="def fetch():\n    pass", start_line=1, end_line=2,
+        symbol_name="fetch",
+    ))
+    source_store = MagicMock()
+    source_store.capture.return_value = "source-copy"
+    source_store.indexing_directory.return_value.__enter__.return_value = "private-copy"
+    source_store.joern_directory.return_value.__enter__.return_value = "/joern-inputs/copy"
+    joern = MagicMock()
+    embedding_model = MagicMock()
+    embedding_model.embed_code.return_value = [[0.0], [0.0]]
+
+    with patch("secval.services.index_service.create_code_index", return_value=False), \
+            patch("secval.services.index_service.create_code_vector_collection", return_value=False), \
+            patch("secval.services.index_service.process_repository", return_value=process_result), \
+            patch("secval.services.index_service.save_code_chunks", return_value=2), \
+            patch("secval.services.index_service.save_code_vectors", return_value=2), \
+            patch("secval.services.index_service.delete_old_code_chunks", return_value=0), \
+            patch("secval.services.index_service.delete_old_code_vectors"):
+        result = index_repository(
+            MagicMock(), MagicMock(), embedding_model, create_repository(), create_snapshot(),
+            source_store=source_store, joern_client=joern,
+        )
+
+    assert source_store.joern_directory.call_args_list == [
+        call("source-copy", "/joern-inputs", "java"),
+        call("source-copy", "/joern-inputs", "python"),
+    ]
+    assert joern.import_code.call_args_list == [
+        call("/joern-inputs/copy", result.index_run_id, "java"),
+        call("/joern-inputs/copy", result.index_run_id, "python"),
+    ]
 
 
 @patch("secval.services.index_service.create_code_index")

@@ -6,9 +6,17 @@ __pycache__/
 .venv/
 venv/
 .env
+config/neo4j_auth.txt
+config/joern_password.txt
 build/
 data/
 tests/
+!tests/
+tests/*
+!tests/audit/
+!tests/demo_projects/
+tests/demo_projects/*
+!tests/demo_projects/team_orders/
 docs/*
 !docs/audit-implementation-status.md
 !docs/audit-handoff-2026-09-04.md

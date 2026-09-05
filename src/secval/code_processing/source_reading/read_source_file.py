@@ -11,6 +11,7 @@ DEFAULT_MAX_FILE_SIZE = 2 * 1024 * 1024
 # 文件扩展名和编程语言的对应关系。
 FILE_LANGUAGES = {
     ".java": "java",
+    ".py": "python",
 }
 
 

@@ -7,6 +7,8 @@ const searchForm = document.querySelector("#searchForm");
 const uploadButton = document.querySelector("#uploadButton");
 const zipUploadButton = document.querySelector("#zipUploadButton");
 const indexButton = document.querySelector("#indexButton");
+const cancelIndexButton = document.querySelector("#cancelIndexButton");
+const recoverIndexButton = document.querySelector("#recoverIndexButton");
 const searchButton = document.querySelector("#searchButton");
 const indexStatus = document.querySelector("#indexStatus");
 const uploadStatus = document.querySelector("#uploadStatus");
@@ -19,6 +21,7 @@ const scopeStatus = document.querySelector("#scopeStatus");
 const refreshRepositories = document.querySelector("#refreshRepositories");
 let repositoryScopes = [];
 let searching = false;
+let currentIndexJobId = null;
 const scopeStorageKey = "secval.searchScope";
 
 refreshRepositories.addEventListener("click", () => loadRepositories());
@@ -83,6 +86,8 @@ async function loadRepositories(preferredKey) {
 document.querySelector("#apiAddress").textContent = apiAddress;
 document.querySelector("#checkHealthButton").addEventListener("click", checkHealth);
 indexForm.addEventListener("submit", indexRepository);
+cancelIndexButton.addEventListener("click", cancelIndexJob);
+recoverIndexButton.addEventListener("click", recoverIndexJob);
 uploadForm.addEventListener("submit", uploadRepository);
 zipUploadForm.addEventListener("submit", uploadRepositoryZip);
 searchForm.addEventListener("submit", searchCode);
@@ -107,6 +112,7 @@ async function checkHealth() {
         healthDot.className = "health-dot success";
         healthText.textContent = [
             `服务正常 · OpenSearch ${body.open_search} · Qdrant ${body.qdrant}`,
+            `Neo4j ${body.neo4j} · Joern ${body.joern}`,
             `Embedding ${body.embedding_provider} · ${body.embedding_model}`,
             `Reranker ${body.reranker_provider} · ${body.reranker_model || "关闭"}`,
         ].join(" · ");
@@ -118,7 +124,7 @@ async function checkHealth() {
 
 async function indexRepository(event) {
     event.preventDefault();
-    setWorkingState(indexButton, indexStatus, true, "正在扫描、切分并写入搜索索引……");
+    setWorkingState(indexButton, indexStatus, true, "正在建立搜索索引、关系图和静态路径图；大仓库可能需要较长时间……");
 
     const requestBody = {
         repository_id: valueOf("repositoryId"),
@@ -129,12 +135,18 @@ async function indexRepository(event) {
     };
 
     try {
-        const response = await sendJson("/api/repositories/index", requestBody);
+        const job = await sendJson("/api/repositories/index-jobs", requestBody);
+        currentIndexJobId = job.id;
+        cancelIndexButton.disabled = false;
+        indexStatus.textContent = `后台任务 ${job.id} 已创建，正在等待服务端完成……`;
+        const completedJob = await waitForIndexJob(job.id);
+        const response = completedJob.result;
         indexStatus.className = "status-box success";
         indexStatus.textContent = [
             `入库完成，批次 ${response.index_run_id}`,
             `扫描 ${response.total_files} 个文件，成功 ${response.successful_files} 个，失败 ${response.failed_files} 个。`,
             `生成 ${response.generated_chunks} 个代码块，写入文本 ${response.saved_chunks} 个、向量 ${response.saved_vectors} 个，清理旧块 ${response.deleted_chunks} 个。`,
+            `阶段记录：${formatStageHistory(completedJob)}`,
         ].join("\n");
 
         await loadRepositories(scopeKey(requestBody));
@@ -144,9 +156,76 @@ async function indexRepository(event) {
     } catch (error) {
         showError(indexStatus, error);
     } finally {
+        currentIndexJobId = null;
+        cancelIndexButton.disabled = true;
+        recoverIndexButton.disabled = true;
         indexButton.disabled = false;
         indexButton.textContent = "2. 建立搜索索引";
     }
+}
+
+async function cancelIndexJob() {
+    if (!currentIndexJobId) return;
+    cancelIndexButton.disabled = true;
+    try {
+        const job = await sendJson(`/api/repositories/index-jobs/${currentIndexJobId}/cancel`, {});
+        indexStatus.textContent = `任务 ${job.id} 已收到取消请求，将在提交新索引前的安全阶段停止。`;
+    } catch (error) {
+        showError(indexStatus, error);
+    }
+}
+
+async function recoverIndexJob() {
+    if (!currentIndexJobId) return;
+    recoverIndexButton.disabled = true;
+    try {
+        const job = await sendJson(
+            `/api/repositories/index-jobs/${currentIndexJobId}/recover-stale`,
+            {},
+        );
+        indexStatus.textContent = `失联任务 ${job.id} 已收口为 ${job.status}；如需重跑，请明确调用 /resume。`;
+    } catch (error) {
+        showError(indexStatus, error);
+    }
+}
+
+async function waitForIndexJob(jobId) {
+    while (true) {
+        const httpResponse = await fetch(`/api/repositories/index-jobs/${jobId}`, {cache: "no-store"});
+        const job = await readResponseBody(httpResponse);
+        ensureSuccessfulResponse(httpResponse, job);
+        recoverIndexButton.disabled = job.lease_state !== "expired";
+        if (job.status === "completed") return job;
+        if (job.status === "failed") {
+            const failedAt = job.failed_stage ? `（失败阶段：${job.failed_stage}）` : "";
+            throw new Error(`${job.error || "后台索引失败"}${failedAt}`);
+        }
+        if (job.status === "interrupted") {
+            throw new Error(`任务 ${jobId} 因服务重启中断，可调用 /resume 显式续跑`);
+        }
+        if (job.status === "cancelled") {
+            throw new Error(`任务 ${jobId} 已在提交新索引前安全取消，可调用 /resume 重新执行`);
+        }
+        indexStatus.textContent = [
+            `后台任务 ${jobId}：${job.stage || job.status}。关闭页面不会取消服务端任务。`,
+            job.queue_position ? `当前位于等待队列第 ${job.queue_position} 位` : "任务已被认领",
+            formatJobOwner(job),
+            `阶段记录：${formatStageHistory(job)}`,
+        ].join("\n");
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+}
+
+function formatJobOwner(job) {
+    if (!job.worker_id) return "尚未被工作进程认领";
+    const heartbeat = job.heartbeat_at ? new Date(job.heartbeat_at).toLocaleTimeString() : "暂无";
+    return `执行者 ${job.worker_id.slice(0, 8)} · 第 ${job.attempt} 次尝试 · 最近心跳 ${heartbeat}`;
+}
+
+function formatStageHistory(job) {
+    const history = job.stage_history || [];
+    if (history.length === 0) return "旧任务没有阶段时间记录";
+    return history.map((item) => `${new Date(item.time).toLocaleTimeString()} ${item.stage}`).join(" → ");
 }
 
 async function uploadRepository(event) {

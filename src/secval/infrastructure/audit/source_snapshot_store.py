@@ -8,6 +8,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from secval.code_processing.repository_scan import is_supported_source, language_for_source
+
 
 class SourceSnapshotStore:
     """事务保存有限文本文件及排除清单，之后只读取保存的副本。"""
@@ -15,7 +17,7 @@ class SourceSnapshotStore:
     def __init__(self, database: str):
         Path(database).parent.mkdir(parents=True, exist_ok=True)
         self.database = database
-        with sqlite3.connect(database) as db:
+        with self._connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS source_snapshots (
                     id TEXT PRIMARY KEY, repository_id TEXT, version_label TEXT
@@ -29,6 +31,16 @@ class SourceSnapshotStore:
                     repository_id TEXT NOT NULL, snapshot_id TEXT NOT NULL
                 );
             """)
+
+    @contextmanager
+    def _connect(self):
+        """既处理事务，也释放句柄，避免Windows文件占用及长期连接积累。"""
+        connection = sqlite3.connect(self.database)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def capture(self, root: Path, repository_id: str, version_label: str) -> str:
         """显式指定来源；有界采集，不声称整个目录在同一时刻原子冻结。"""
@@ -46,7 +58,7 @@ class SourceSnapshotStore:
             # os.walk 默认跳过无法扫描的目录，会把不完整清单误当成功快照。
             raise ValueError("源码目录扫描失败，快照未保存；请检查目录权限或并发变更") from None
 
-        with sqlite3.connect(self.database) as db:
+        with self._connect() as db:
             db.execute("INSERT INTO source_snapshots VALUES (?, ?, ?)",
                        (snapshot_id, repository_id, version_label))
             for folder, directories, files in os.walk(root, followlinks=False, onerror=refuse_scan_error):
@@ -95,8 +107,8 @@ class SourceSnapshotStore:
 
     @contextmanager
     def indexing_directory(self, snapshot_id: str):
-        """仅将固定副本中的 Java 文件还原到私有临时目录供现有解析器使用。"""
-        with sqlite3.connect(self.database) as db:
+        """将固定副本中已支持的源文件还原到私有临时目录。"""
+        with self._connect() as db:
             rows = db.execute(
                 "SELECT path, status FROM source_files WHERE snapshot_id=?",
                 (snapshot_id,),
@@ -104,10 +116,10 @@ class SourceSnapshotStore:
         with TemporaryDirectory(prefix="secval-index-") as directory:
             root = Path(directory).resolve()
             for relative, status in rows:
-                if not relative.lower().endswith(".java"):
+                if not is_supported_source(relative):
                     continue
                 if status != "captured":
-                    raise ValueError("存在未采集的 Java 文件，不能建立完整代码索引")
+                    raise ValueError("存在未采集的受支持源文件，不能建立完整代码索引")
                 destination = (root / relative).resolve()
                 if not destination.is_relative_to(root):
                     raise ValueError("快照路径越界")
@@ -115,10 +127,38 @@ class SourceSnapshotStore:
                 destination.write_bytes(self.read(snapshot_id, relative).encode("utf-8"))
             yield str(root)
 
+    @contextmanager
+    def joern_directory(self, snapshot_id: str, shared_root: str, language: str | None = None):
+        """按语言把固定快照还原到API与Joern共享的私有目录。"""
+        base = Path(shared_root).resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT path, status FROM source_files WHERE snapshot_id=? ORDER BY path",
+                (snapshot_id,),
+            ).fetchall()
+        with TemporaryDirectory(prefix="secval-joern-", dir=base) as directory:
+            root = Path(directory).resolve()
+            if not root.is_relative_to(base):
+                raise ValueError("Joern临时目录越界")
+            for relative, status in rows:
+                if not is_supported_source(relative):
+                    continue
+                if language is not None and language_for_source(relative) != language:
+                    continue
+                if status != "captured":
+                    raise ValueError("存在未采集的受支持源文件，不能建立Joern分析图")
+                destination = (root / relative).resolve()
+                if not destination.is_relative_to(root):
+                    raise ValueError("Joern快照路径越界")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(self.read(snapshot_id, relative), encoding="utf-8")
+            yield root.as_posix()
+
     def bind(self, source_snapshot_id: str, repository_id: str,
              snapshot_id: str, index_run_id: str) -> None:
         """只在双存储写入及旧批次清理成功之后登记，不覆盖已有批次。"""
-        with sqlite3.connect(self.database) as db:
+        with self._connect() as db:
             row = db.execute("SELECT repository_id FROM source_snapshots WHERE id=?",
                              (source_snapshot_id,)).fetchone()
             if row is None or row[0] != repository_id:
@@ -128,13 +168,23 @@ class SourceSnapshotStore:
 
     def resolve_binding(self, repository_id: str, snapshot_id: str,
                         index_run_id: str) -> str | None:
-        with sqlite3.connect(self.database) as db:
+        with self._connect() as db:
             row = db.execute(
                 "SELECT source_snapshot_id FROM source_index_bindings "
                 "WHERE repository_id=? AND snapshot_id=? AND index_run_id=?",
                 (repository_id, snapshot_id, index_run_id),
             ).fetchone()
         return row[0] if row else None
+
+    def list_bound_runs(self, repository_id: str, snapshot_id: str) -> list[str]:
+        """列出旧分析批次，只用于新批次完成后的延迟清理。"""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT index_run_id FROM source_index_bindings "
+                "WHERE repository_id=? AND snapshot_id=? ORDER BY index_run_id",
+                (repository_id, snapshot_id),
+            ).fetchall()
+        return [row[0] for row in rows]
 
     @staticmethod
     def _excluded(path: Path, root: Path) -> str | None:
@@ -154,7 +204,7 @@ class SourceSnapshotStore:
     def inventory(self, snapshot_id: str, offset: int = 0) -> list[dict]:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("清单偏移必须为非负整数")
-        with sqlite3.connect(self.database) as db:
+        with self._connect() as db:
             db.row_factory = sqlite3.Row
             return [dict(row) for row in db.execute(
                 "SELECT path, status, digest FROM source_files "
@@ -164,7 +214,7 @@ class SourceSnapshotStore:
 
     def read(self, snapshot_id: str, path: str) -> str:
         """仅查询快照表，不使用模型提供的路径访问文件系统。"""
-        with sqlite3.connect(self.database) as db:
+        with self._connect() as db:
             row = db.execute(
                 "SELECT status, digest, content FROM source_files "
                 "WHERE snapshot_id=? AND path=?", (snapshot_id, path),

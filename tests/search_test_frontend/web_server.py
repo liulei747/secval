@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -15,6 +16,7 @@ ALLOWED_API_PATHS = {
     "/api/repositories/upload",
     "/api/repositories/upload-zip",
     "/api/repositories/index",
+    "/api/repositories/index-jobs",
     "/api/search",
 }
 MAX_REQUEST_SIZE = 510 * 1024 * 1024
@@ -33,13 +35,17 @@ class SearchTestRequestHandler(SimpleHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:
-        if self.path in {"/api/health", "/api/repositories"}:
+        if self.path in {"/api/health", "/api/repositories", "/api/repositories/index-jobs"} or re.fullmatch(
+            r"/api/repositories/index-jobs/[a-f0-9]{32}", self.path
+        ):
             self._forward_api_request("GET")
             return
         super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path in ALLOWED_API_PATHS:
+        if self.path in ALLOWED_API_PATHS or re.fullmatch(
+            r"/api/repositories/index-jobs/[a-f0-9]{32}/resume", self.path
+        ):
             self._forward_api_request("POST")
             return
         self.send_error(404, "这里只允许转发搜索测试接口")
@@ -47,7 +53,10 @@ class SearchTestRequestHandler(SimpleHTTPRequestHandler):
     def _forward_api_request(self, method: str) -> None:
         """把浏览器请求原样转发到指定的 Secval API。"""
 
-        if self.path not in ALLOWED_API_PATHS:
+        dynamic_job_path = re.fullmatch(
+            r"/api/repositories/index-jobs/[a-f0-9]{32}(?:/resume)?", self.path
+        )
+        if self.path not in ALLOWED_API_PATHS and dynamic_job_path is None:
             self.send_error(404, "不允许转发这个接口")
             return
 

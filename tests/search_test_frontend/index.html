@@ -45,7 +45,7 @@
                 </div>
 
                 <p class="help-text">
-                    先从电脑选择代码目录并上传。服务端保存成功后，再读取这个目录并建立搜索索引。
+                    先从电脑选择代码目录并上传。服务端保存成功后，再建立关键词、向量、关系和静态路径索引。
                 </p>
 
                 <div class="endpoint-line">POST /api/repositories/upload</div>
@@ -96,7 +96,7 @@
                     等待选择本机代码目录。
                 </div>
 
-                <div class="endpoint-line second-endpoint">POST /api/repositories/index</div>
+                <div class="endpoint-line second-endpoint">POST /api/repositories/index-jobs</div>
                 <form id="indexForm">
                     <div class="field-row">
                         <label>
@@ -110,6 +110,12 @@
                     </div>
                     <button id="indexButton" class="primary-button" type="submit">
                         2. 建立搜索索引
+                    </button>
+                    <button id="cancelIndexButton" type="button" disabled>
+                        请求安全取消
+                    </button>
+                    <button id="recoverIndexButton" type="button" disabled>
+                        确认失联任务
                     </button>
                 </form>
 

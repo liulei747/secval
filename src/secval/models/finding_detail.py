@@ -27,7 +27,8 @@ def parse_finding_detail(raw, investigations, evidence):
     if (not isinstance(cwes, list) or len(cwes) > 10
             or any(not isinstance(c, str) or not re.fullmatch(r"CWE-[1-9][0-9]*", c) for c in cwes)
             or len(set(cwes)) != len(cwes)):
-        raise ModelOutputError("CWE必须是最多10项的不重复编号数组，不确定时使用空数组")
+        raise ModelOutputError('taxonomy.cwe必须是最多10项的不重复字符串数组，元素形式例如"CWE-20"；'
+                               '不是数字或对象，不确定时使用[]')
     require_text(raw["root_control"])
     for key in ("rootCause", "attackPath"):
         section = raw[key]
@@ -51,7 +52,8 @@ def parse_finding_detail(raw, investigations, evidence):
         for value in note.values():
             require_text(value)
         if note["evidence_id"] not in evidence or note["evidence_id"] in described:
-            raise ModelOutputError("证据说明必须引用不重复的已读证据")
+            raise ModelOutputError("evidenceNotes中每个evidence_id只能出现一次且必须已读；"
+                                   "同一证据承担多个作用时合并为一项，根因证据使用root_control角色")
         if note["role"] not in {"user_input", "entrypoint", "propagation", "root_control", "sink", "outcome", "expected_control"}:
             raise ModelOutputError("证据角色不合法")
         described.add(note["evidence_id"])

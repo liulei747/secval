@@ -3,6 +3,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
+import argparse
 
 from opensearchpy import OpenSearch
 
@@ -20,10 +21,9 @@ def expect_refused(action):
     raise AssertionError("expected refusal")
 
 
-def main():
-    client = OpenSearch(hosts=[{"host": "opensearch", "port": 9200}])
+def main(host="127.0.0.1"):
+    client = OpenSearch(hosts=[{"host": host, "port": 9200}])
     index = "secval-audit-snapshot-test-" + uuid4().hex
-    evidence_module.CODE_INDEX_NAME = index
     views = []
     created = False
     try:
@@ -34,7 +34,7 @@ def main():
             (root / "src").mkdir(parents=True)
             (root / "config").mkdir()
             source = "class Login {\n  boolean login() { return false; }\n}\n"
-            (root / "src/Login.java").write_text(source, encoding="utf-8")
+            (root / "src/Login.java").write_bytes(source.encode("utf-8"))
             (root / "config/app.xml").write_text("<auth enabled='true'/>", encoding="utf-8")
             (root / "Outside.java").write_text("class Outside {}", encoding="utf-8")
             store = SourceSnapshotStore(str(Path(directory) / "sources.db"))
@@ -44,7 +44,7 @@ def main():
                         "index_run_id": "run-one", "relative_path": "src/Login.java",
                         "content": source, "start_line": 1, "end_line": 3}
             client.index(index=index, id="one", body=document, refresh=True)
-            fixed = evidence_module.EvidenceTools(client, "synthetic", "snapshot", store)
+            fixed = evidence_module.EvidenceTools(client, "synthetic", "snapshot", store, index_name=index)
             views.append(fixed)
             fixed.call("restrict_scope", {"paths": ["src", "config/app.xml"]})
             fixed.call("approve_config_files", {"paths": ["config/app.xml"]})
@@ -70,7 +70,7 @@ def main():
             assert fixed.call("read_file", {"path": "src/Login.java"})["rows"][0]["content"] == source
             assert fixed.call("read_chunk", {"chunk_id": "one"})["rows"][0]["content"] == source
             assert fixed.call("search_source", {"text": "boolean login()"})["rows"]
-            fresh = evidence_module.EvidenceTools(client, "synthetic", "snapshot", store)
+            fresh = evidence_module.EvidenceTools(client, "synthetic", "snapshot", store, index_name=index)
             views.append(fresh)
             expect_refused(lambda: fresh.call("read_file", {"path": "src/Login.java"}))
             print("PASS: bound chunk/file identity; scoped inventory; exact lines; approved config; immutable PIT/source; unbound batch refused")
@@ -84,4 +84,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1")
+    main(parser.parse_args().host)

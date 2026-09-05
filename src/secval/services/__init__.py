@@ -1,7 +1,4 @@
-"""面向API和Agent的业务流程服务。"""
+"""面向 API 和 Agent 的业务流程服务。
 
-from .index_service import index_repository
-from .repository_index_result import RepositoryIndexResult
-from .search_service import SearchService
-
-__all__ = ["RepositoryIndexResult", "SearchService", "index_repository"]
+具体服务请从对应文件导入，避免导入这个目录时加载全部外部依赖。
+"""

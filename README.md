@@ -52,7 +52,8 @@ bootstrap → infrastructure
 `KeywordRetriever`、`VectorRetriever`、`ResultFusion`和`Reranker`，不会直接
 创建OpenSearch、Qdrant或CrossEncoder对象。
 
-Neo4j、Joern、Agent 和 MCP 暂未创建。
+当前已接入 Neo4j 声明关系、Joern 调用/数据流路径和多 Agent 审计。
+MCP 按当前范围暂不实现。图与路径结果只是定位线索，必须回到固定源码快照核实后才能作为审计证据。
 
 ## 本地服务
 
@@ -63,6 +64,8 @@ Neo4j、Joern、Agent 和 MCP 暂未创建。
 - `secval-api`：FastAPI 搜索接口，仅监听本机 `127.0.0.1:8000`。
 - `secval-opensearch`：单节点 OpenSearch，仅监听本机 `127.0.0.1:9200`。
 - `secval-qdrant`：Qdrant 向量数据库，仅监听本机 `127.0.0.1:6333` 和 `127.0.0.1:6334`。
+- `secval-neo4j`：代码声明关系图，管理页和 Bolt 端口仅监听本机。
+- `secval-joern`：代码调用和静态数据流分析，只在 Compose 内部网络提供服务。
 
 启动：
 
@@ -107,13 +110,36 @@ $body = @{
 
 Invoke-RestMethod `
     -Method Post `
-    -Uri http://127.0.0.1:8000/api/repositories/index `
+    -Uri http://127.0.0.1:8000/api/repositories/index-jobs `
     -ContentType application/json `
     -Body $body
 ```
 
+后台接口立即返回任务编号，使用
+`GET /api/repositories/index-jobs/{job_id}` 查看状态。服务重启时，未完成任务会标记为
+`interrupted`；需要用户明确调用 `POST /api/repositories/index-jobs/{job_id}/resume`
+创建续跑子任务。同步 `/api/repositories/index` 仅为兼容旧客户端保留。
+
+`POST /api/repositories/index-jobs/{job_id}/cancel` 请求在下一个安全阶段停止。
+进入“绑定新索引与源码”或“清理旧索引”后会返回 409，避免半提交。已取消任务可以通过
+同一个 `/resume` 接口建立新的子任务，原任务记录不会被覆盖。
+
+新任务会返回 `created_at`、`started_at`、`finished_at` 和 `stage_history`。如果失败，
+`failed_stage` 保存失败前正在执行的阶段。时间使用 UTC ISO 8601 格式，浏览器测试页面
+会换算成本地时间。历史任务没有真实时间时字段为空，不会用数据库升级时间代替。
+
+运行中的任务还会返回 `worker_id`、`heartbeat_at`、`lease_expires_at` 和 `attempt`。
+工作线程在长步骤中持续续租，任务结束后清空到期时间。租约当前用于证明哪个进程负责任务
+以及识别失联，不会自动抢占或重跑过期任务；恢复仍需用户明确调用 `/resume`。
+
+租约状态包括 `pending`（等待认领）、`healthy`（正常续租）、`expired`（心跳过期）、
+`inactive`（任务已结束）和 `missing`（旧运行记录没有租约）。只有 `expired` 才能调用
+`POST /api/repositories/index-jobs/{job_id}/recover-stale`；服务还会确认操作系统进程锁无人
+持有，然后仅把任务收口为 `interrupted`。该接口不执行索引，后续仍需显式 `/resume`。
+非法时间会显示为 `invalid` 并拒绝恢复，不会把损坏数据误判为失联。
+
 `repository_path` 必须是 `data/repositories` 下的相对路径。API 会拒绝绝对路径和
-越过挂载根目录的路径。同一 API 进程会串行导入，失败批次会从两个存储中回滚。
+越过挂载根目录的路径。同一主机上的多个 API 进程也会通过文件锁串行导入，失败批次会回滚。
 上传接口先写临时目录，全部文件保存成功后才替换正式目录；默认不会覆盖已有仓库。
 
 ### 搜索
@@ -140,7 +166,7 @@ Invoke-RestMethod `
 
 代码标识符的大小写、下划线和数字拆分由 OpenSearch 的 `code_analyzer` 完成。
 
-Java 当前会建立以下可搜索代码块：
+当前支持 Java 和 Python。Java 会建立以下可搜索代码块：
 
 - 文件头（包声明、导入和文件级注释）；
 - 类、接口、枚举、注解类型、记录类型和模块；
@@ -152,6 +178,10 @@ Java 当前会建立以下可搜索代码块：
 import、参数、局部变量、Lambda 和注解的“使用位置”不会单独建符号，它们仍然保留在
 所属声明的正文中并可被全文搜索。没有文件头的默认包文件会复用首个类型声明头建立
 `file` 块；没有归入声明正文的独立尾部或间隔注释也会保留为 `file` 块。
+
+Python 当前建立文件头、类、函数、异步函数和方法块，装饰器会跟随对应声明。
+Java/Python 混合仓库的搜索入库已支持。Joern 会按语言建立独立子项目并合并查询结果；
+这可以保留各语言内部的调用和数据流，但不代表已建立 Java 与 Python 之间的跨语言调用边。
 
 查看状态：
 

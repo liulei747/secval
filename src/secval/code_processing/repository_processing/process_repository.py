@@ -1,8 +1,9 @@
 """扫描并处理一个代码仓库。"""
 
 from secval.code_processing.code_splitting.java import split_java_declarations
+from secval.code_processing.code_splitting.python import split_python_declarations
 from secval.code_processing.repository_scan import scan_repository
-from secval.code_processing.source_parsing import parse_java
+from secval.code_processing.source_parsing import parse_java, parse_python
 from secval.code_processing.source_reading import read_source_file
 from secval.code_processing.source_reading.read_source_file import (
     DEFAULT_MAX_FILE_SIZE,
@@ -25,7 +26,7 @@ def process_repository(
     snapshot_id: SnapshotId,
     max_file_size: int = DEFAULT_MAX_FILE_SIZE,
 ) -> RepositoryProcessResult:
-    """扫描仓库，并把可以正常处理的 Java 声明转换成代码块。"""
+    """扫描仓库，并按文件语言选择对应解析器和切块器。"""
 
     relative_paths = scan_repository(root_path)
     chunks: list[CodeChunk] = []
@@ -47,8 +48,14 @@ def process_repository(
                 snapshot_id=snapshot_id,
                 max_file_size=max_file_size,
             )
-            syntax_tree = parse_java(source_file)
-            file_chunks = split_java_declarations(source_file, syntax_tree)
+            if source_file.language == "java":
+                syntax_tree = parse_java(source_file)
+                file_chunks = split_java_declarations(source_file, syntax_tree)
+            elif source_file.language == "python":
+                syntax_tree = parse_python(source_file)
+                file_chunks = split_python_declarations(source_file, syntax_tree)
+            else:
+                raise ValueError(f"没有可用的代码处理器：{source_file.language}")
             chunks.extend(file_chunks)
             successful_files += 1
 

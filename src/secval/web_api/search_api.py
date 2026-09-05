@@ -34,10 +34,15 @@ from secval.infrastructure.qdrant import CODE_VECTOR_COLLECTION
 from secval.models.code import CodeRepository, CodeSnapshot
 from secval.models.identifiers import RepositoryId, SnapshotId
 from secval.models.search import SearchQuery, SearchResult
-from secval.services import index_repository
+from secval.services.index_service import index_repository
 from secval.services.repository_operation import (
     RepositoryBusyError,
     repository_operation,
+)
+from secval.services.index_job_service import (
+    IndexJobService,
+    IndexJobStore,
+    IndexProcessBusyError,
 )
 from secval.web_api.audit_api import router as audit_router
 from secval.web_api.repository_upload import (
@@ -129,16 +134,39 @@ class IndexRepositoryResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """搜索服务及两个存储的健康状态。"""
+    """搜索、关系图和路径分析服务的健康状态。"""
 
     status: str
     open_search: str
     qdrant: str
+    neo4j: str
+    joern: str
     embedding_provider: str
     embedding_model: str
     vector_collection: str
     reranker_provider: str
     reranker_model: str | None
+
+
+class IndexJobResponse(BaseModel):
+    id: str
+    parent_id: str | None
+    status: str
+    stage: str
+    request: dict
+    result: dict | None
+    error: str | None
+    created_at: str | None
+    started_at: str | None
+    finished_at: str | None
+    failed_stage: str | None
+    stage_history: list[dict]
+    worker_id: str | None
+    heartbeat_at: str | None
+    lease_expires_at: str | None
+    attempt: int
+    lease_state: str
+    queue_position: int | None
 
 
 def create_search_app(
@@ -158,13 +186,27 @@ def create_search_app(
         app.state.search_runtime = active_runtime
         app.state.index_lock = Lock()
         app.state.source_snapshot_store = create_source_snapshot_store()
-        app.state.audit_service = create_audit_service(active_runtime.open_search_connection)
+        job_database = os.getenv("SECVAL_INDEX_JOB_DB", "data/index_jobs.sqlite3")
+        app.state.index_job_service = IndexJobService(
+            IndexJobStore(job_database),
+            lambda values, progress: _index_result_dict(_execute_index(
+                active_runtime, app.state.source_snapshot_store, app.state.index_lock,
+                IndexRepositoryRequest(**values), progress,
+            )),
+        )
+        app.state.audit_service = create_audit_service(active_runtime.open_search_connection,
+                                                       active_runtime.search_service,
+                                                       active_runtime.code_graph_store,
+                                                       active_runtime.joern_client)
         yield
+        app.state.index_job_service.close()
         app.state.audit_service.close()
 
         if owns_runtime:
             active_runtime.open_search_connection.transport.close()
             active_runtime.qdrant_client.close()
+            if active_runtime.code_graph_store is not None:
+                active_runtime.code_graph_store.close()
 
     app = FastAPI(
         title="Secval Search API",
@@ -174,11 +216,13 @@ def create_search_app(
 
     @app.get("/api/health", response_model=HealthResponse)
     def health(request: Request, response: Response) -> HealthResponse:
-        """检查 OpenSearch 和 Qdrant 是否可以连接。"""
+        """检查搜索、关系图和路径分析服务是否可以连接。"""
 
         active_runtime: SearchRuntime = request.app.state.search_runtime
         open_search_status = "unavailable"
         qdrant_status = "unavailable"
+        neo4j_status = "disabled" if active_runtime.code_graph_store is None else "unavailable"
+        joern_status = "disabled" if active_runtime.joern_client is None else "unavailable"
 
         try:
             if active_runtime.open_search_connection.ping():
@@ -192,11 +236,27 @@ def create_search_app(
         except Exception:
             qdrant_status = "unavailable"
 
+        try:
+            if active_runtime.code_graph_store is not None:
+                active_runtime.code_graph_store.verify()
+                neo4j_status = "available"
+        except Exception:
+            neo4j_status = "unavailable"
+
+        try:
+            if active_runtime.joern_client is not None:
+                active_runtime.joern_client.verify()
+                joern_status = "available"
+        except Exception:
+            joern_status = "unavailable"
+
         service_status = "healthy"
 
         if (
             open_search_status != "available"
             or qdrant_status != "available"
+            or neo4j_status == "unavailable"
+            or joern_status == "unavailable"
         ):
             service_status = "unhealthy"
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -205,6 +265,8 @@ def create_search_app(
             status=service_status,
             open_search=open_search_status,
             qdrant=qdrant_status,
+            neo4j=neo4j_status,
+            joern=joern_status,
             embedding_provider=active_runtime.embedding_model.provider_name,
             embedding_model=active_runtime.embedding_model.model_name,
             vector_collection=CODE_VECTOR_COLLECTION,
@@ -227,6 +289,56 @@ def create_search_app(
         return RepositoryCatalogResponse(
             repositories=[IndexedRepositoryResponse(**scope) for scope in scopes]
         )
+
+    @app.post("/api/repositories/index-jobs", response_model=IndexJobResponse, status_code=202)
+    def create_index_job(index_request: IndexRepositoryRequest, request: Request):
+        """立即返回任务编号，避免浏览器长时间保持索引连接。"""
+        try:
+            return request.app.state.index_job_service.create(index_request.model_dump())
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+
+    @app.get("/api/repositories/index-jobs", response_model=list[IndexJobResponse])
+    def list_index_jobs(request: Request):
+        return request.app.state.index_job_service.list()
+
+    @app.get("/api/repositories/index-jobs/{job_id}", response_model=IndexJobResponse)
+    def get_index_job(job_id: str, request: Request):
+        try:
+            return request.app.state.index_job_service.get(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="索引任务不存在") from None
+
+    @app.post("/api/repositories/index-jobs/{job_id}/resume",
+              response_model=IndexJobResponse, status_code=202)
+    def resume_index_job(job_id: str, request: Request):
+        try:
+            return request.app.state.index_job_service.resume(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="索引任务不存在") from None
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+
+    @app.post("/api/repositories/index-jobs/{job_id}/cancel", response_model=IndexJobResponse)
+    def cancel_index_job(job_id: str, request: Request):
+        """请求任务在提交新索引之前的下一个安全阶段停止。"""
+        try:
+            return request.app.state.index_job_service.cancel(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="索引任务不存在") from None
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+
+    @app.post("/api/repositories/index-jobs/{job_id}/recover-stale",
+              response_model=IndexJobResponse)
+    def recover_stale_index_job(job_id: str, request: Request):
+        """确认租约过期且无人持锁后，将任务标记为可显式续跑。"""
+        try:
+            return request.app.state.index_job_service.recover_stale(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="索引任务不存在") from None
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
 
     @app.post("/api/search", response_model=SearchResponse)
     def search(
@@ -338,33 +450,13 @@ def create_search_app(
         active_runtime: SearchRuntime = request.app.state.search_runtime
 
         try:
-            repository_root = _resolve_repository_path(
-                index_request.repository_path
-            )
-            repository = CodeRepository(
-                repository_id=RepositoryId(index_request.repository_id),
-                name=index_request.repository_name,
-                root_path=str(repository_root),
-            )
-            snapshot = CodeSnapshot(
-                snapshot_id=SnapshotId(index_request.snapshot_id),
-                repository_id=repository.repository_id,
-                version=index_request.version,
-            )
-
-            # 同一进程一次只执行一个导入，避免两个批次交叉清理数据。
-            with repository_operation(request.app.state.index_lock):
-                result = index_repository(
-                    open_search_connection=(
-                        active_runtime.open_search_connection
-                    ),
-                    qdrant_client=active_runtime.qdrant_client,
-                    embedding_model=active_runtime.embedding_model,
-                    repository=repository,
-                    snapshot=snapshot,
-                    source_store=request.app.state.source_snapshot_store,
+            result = request.app.state.index_job_service.run_exclusive(
+                lambda: _execute_index(
+                    active_runtime, request.app.state.source_snapshot_store,
+                    request.app.state.index_lock, index_request,
                 )
-        except RepositoryBusyError as error:
+            )
+        except (RepositoryBusyError, IndexProcessBusyError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except (ValueError, OSError) as error:
             raise HTTPException(
@@ -372,24 +464,7 @@ def create_search_app(
                 detail=str(error),
             ) from error
 
-        process_result = result.process_result
-        return IndexRepositoryResponse(
-            index_run_id=result.index_run_id,
-            total_files=process_result.total_files,
-            successful_files=process_result.successful_files,
-            failed_files=len(process_result.errors),
-            generated_chunks=len(process_result.chunks),
-            saved_chunks=result.saved_chunks,
-            saved_vectors=result.saved_vectors,
-            deleted_chunks=result.deleted_chunks,
-            errors=[
-                FileErrorResponse(
-                    relative_path=error.relative_path,
-                    message=error.message,
-                )
-                for error in process_result.errors
-            ],
-        )
+        return IndexRepositoryResponse(**_index_result_dict(result))
 
     app.include_router(audit_router)
     return app
@@ -432,6 +507,49 @@ def _resolve_repository_path(repository_path: str) -> Path:
         raise ValueError(f"仓库目录不存在：{repository_path}")
 
     return resolved_path
+
+
+def _execute_index(runtime, source_store, index_lock, index_request, progress=None):
+    """同步执行一次索引；Web同步接口和后台任务共用同一套规则。"""
+    repository_root = _resolve_repository_path(index_request.repository_path)
+    repository = CodeRepository(
+        repository_id=RepositoryId(index_request.repository_id),
+        name=index_request.repository_name,
+        root_path=str(repository_root),
+    )
+    snapshot = CodeSnapshot(
+        snapshot_id=SnapshotId(index_request.snapshot_id),
+        repository_id=repository.repository_id,
+        version=index_request.version,
+    )
+    with repository_operation(index_lock):
+        return index_repository(
+            open_search_connection=runtime.open_search_connection,
+            qdrant_client=runtime.qdrant_client,
+            embedding_model=runtime.embedding_model,
+            repository=repository,
+            snapshot=snapshot,
+            source_store=source_store,
+            graph_store=runtime.code_graph_store,
+            joern_client=runtime.joern_client,
+            progress=progress,
+        )
+
+
+def _index_result_dict(result):
+    process_result = result.process_result
+    return {
+        "index_run_id": result.index_run_id,
+        "total_files": process_result.total_files,
+        "successful_files": process_result.successful_files,
+        "failed_files": len(process_result.errors),
+        "generated_chunks": len(process_result.chunks),
+        "saved_chunks": result.saved_chunks,
+        "saved_vectors": result.saved_vectors,
+        "deleted_chunks": result.deleted_chunks,
+        "errors": [{"relative_path": error.relative_path, "message": error.message}
+                   for error in process_result.errors],
+    }
 
 
 def _create_result_response(result: SearchResult) -> SearchResultResponse:

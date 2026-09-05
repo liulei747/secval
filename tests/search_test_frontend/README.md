@@ -8,12 +8,13 @@
 两个端口不同，浏览器会把它们视为不同来源。为了不修改生产 API 的跨域设置，测试服务器
 负责提供静态页面，并把页面发往 `/api/...` 的请求转发到 Secval API。
 
-它只允许转发以下三个接口：
+它只允许转发以下测试所需接口：
 
 - `GET /api/health`
 - `POST /api/repositories/upload`
 - `POST /api/repositories/upload-zip`
 - `POST /api/repositories/index`
+- `POST /api/repositories/index-jobs`及任务状态、显式续跑子路径
 - `POST /api/search`
 
 ## 完整测试流程
@@ -24,10 +25,10 @@
 POST /api/repositories/upload 或 upload-zip
             ↓
 data/repositories/仓库目录（持久保存）
-            ↓ HTTP POST /api/repositories/index
+            ↓ HTTP POST /api/repositories/index-jobs
 代码扫描 → Java 解析 → 代码切块
             ↓
-OpenSearch + Qdrant
+OpenSearch + Qdrant + Neo4j + Joern
             ↓
 测试页面填写自然语言问题
             ↓ HTTP POST /api/search

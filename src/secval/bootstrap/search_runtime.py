@@ -29,6 +29,8 @@ from secval.infrastructure.reranker import (
 )
 from secval.interfaces import EmbeddingModel, Reranker
 from secval.services.search_service import SearchService
+from secval.bootstrap.graph_runtime import create_optional_code_graph_store
+from secval.bootstrap.joern_runtime import create_optional_joern_client
 
 
 @dataclass
@@ -41,6 +43,8 @@ class SearchRuntime:
     embedding_model: EmbeddingModel
     reranker: Reranker
     search_service: SearchService
+    code_graph_store: object | None = None
+    joern_client: object | None = None
 
 
 def create_search_runtime(
@@ -84,6 +88,8 @@ def create_search_runtime(
         embedding_model=embedding_model,
         reranker=reranker,
         search_service=search_service,
+        code_graph_store=create_optional_code_graph_store(),
+        joern_client=create_optional_joern_client(),
     )
 
 

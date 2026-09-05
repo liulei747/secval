@@ -13,6 +13,10 @@ class AuditUnavailableError(ValueError):
     pass
 
 
+class EvidenceServiceError(RuntimeError):
+    """固定取证视图或搜索服务失败，不能自动切换实时数据继续。"""
+
+
 @dataclass(frozen=True)
 class AuditTaskInput:
     objective: str
@@ -27,8 +31,12 @@ class AuditTaskInput:
     approved_config_paths: list[str] = field(default_factory=list)
     allow_remote_config: bool = False
     max_seconds: int = 300
+    # 兼容旧Python调用与历史任务；新Web请求默认3，包含主Agent。
+    parallel_agents: int = 1
 
     def __post_init__(self):
+        if type(self.parallel_agents) is not int or not 1 <= self.parallel_agents <= 4:
+            raise ValueError("同时运行的Agent数量必须为1到4，包含主Agent")
         validate_scope_paths(self.scope_paths)
         validate_config_paths(self.approved_config_paths, self.scope_paths)
         if type(self.allow_remote_config) is not bool or (self.approved_config_paths and not self.allow_remote_config):

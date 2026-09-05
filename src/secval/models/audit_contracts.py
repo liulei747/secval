@@ -4,10 +4,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from secval.models.source_range import validate_line_range
+from secval.models.audit_tools import READ_TOOL_ARGUMENTS
 
 
 class ModelOutputError(ValueError):
     """可纠正的格式问题。"""
+
+    def __init__(self, message, *, code="invalid_action"):
+        super().__init__(message)
+        allowed = {"invalid_action", "invalid_response", "missing_content", "invalid_json",
+                   "not_object", "truncated", "response_too_large"}
+        self.code = code if code in allowed else "invalid_action"
 
 
 class ModelRequestError(ValueError):
@@ -74,6 +81,12 @@ class ToolAction:
     @classmethod
     def parse(cls, raw):
         allowed = {
+            "submit_worker_progress": {"summary", "questions", "unknowns", "reviewed_files"},
+            "start_investigator": {"title", "question", "evidence_ids"},
+            "team_progress": set(),
+            "wait_for_workers": set(),
+            "read_worker_result": {"worker_id"},
+            "link_worker_questions": {"investigation_id", "question_ids", "reason"},
             "audit_progress": {"offset"},
             "record_file_review": {"file_id", "assessment", "controls_checked", "unknowns"},
             "record_finding_detail": {"investigation_id", "title", "summary", "rootCause", "attackPath",
@@ -87,14 +100,8 @@ class ToolAction:
                                      "counterevidence", "next_check", "unknowns", "evidence_ids", "baseline_question_ids"},
             "record_boundary": {"entry", "attacker_control", "asset", "trust_transition",
                                 "expected_control", "observed_control", "unknowns", "evidence_ids"},
-            "list_files": {"offset"},
-            "read_file": {"path", "char_offset", "start_line", "end_line"},
-            "list_chunks": {"offset"},
-            "search_text": {"text", "offset"},
-            "search_source": {"text", "offset"},
-            "find_symbol": {"text", "offset"},
-            "read_chunk": {"chunk_id", "char_offset", "start_line", "end_line"},
         }
+        allowed.update(READ_TOOL_ARGUMENTS)
         if not isinstance(raw, dict) or set(raw) != {"tool", "arguments"}:
             raise ModelOutputError("动作必须仅包含tool和arguments，不能同时提交报告")
         name, args = raw["tool"], raw["arguments"]
@@ -105,17 +112,50 @@ class ToolAction:
         ):
             raise ModelOutputError("工具名称或参数对象不合法")
         if set(args) - allowed[name]:
-            raise ModelOutputError("工具包含未允许参数")
+            # 仅列出后端允许的字段，不回显模型发送的未知字段或值。
+            raise ModelOutputError("工具包含未允许参数；允许字段：" + ", ".join(sorted(allowed[name])))
         offset = args.get("offset", 0)
         char_offset = args.get("char_offset", 0)
         if type(char_offset) is not int or char_offset < 0:
             raise ModelOutputError("char_offset必须为非负整数")
         if type(offset) is not int or not 0 <= offset <= 9980:
             raise ModelOutputError("offset必须是0到9980的整数")
-        if name in ("find_symbol", "search_text", "search_source") and (
+        if name in ("find_symbol", "search_text", "search_source", "hybrid_search") and (
             not text(args.get("text")) or len(args["text"]) > 500
         ):
             raise ModelOutputError("text必须是1到500字符的非空文本")
+        if name == "hybrid_search":
+            top_k = args.get("top_k", 10)
+            if type(top_k) is not int or not 1 <= top_k <= 20:
+                raise ModelOutputError("hybrid_search的top_k必须是1到20的整数")
+        if name == "find_code_relations":
+            if not text(args.get("symbol")) or len(args["symbol"]) > 300:
+                raise ModelOutputError("symbol必须是1到300字符的非空文本")
+            limit = args.get("limit", 20)
+            if type(limit) is not int or not 1 <= limit <= 50:
+                raise ModelOutputError("find_code_relations的limit必须是1到50的整数")
+        if name == "find_code_calls":
+            method = args.get("method")
+            if not text(method) or len(method) > 200:
+                raise ModelOutputError("method必须是1到200字符的非空文本")
+            limit = args.get("limit", 20)
+            if type(limit) is not int or not 1 <= limit <= 50:
+                raise ModelOutputError("find_code_calls的limit必须是1到50的整数")
+        if name == "find_data_paths":
+            if not text(args.get("source_method")) or len(args["source_method"]) > 200:
+                raise ModelOutputError("source_method必须是1到200字符的非空文本")
+            if not text(args.get("sink_method")) or len(args["sink_method"]) > 200:
+                raise ModelOutputError("sink_method必须是1到200字符的非空文本")
+            limit = args.get("limit", 10)
+            if type(limit) is not int or not 1 <= limit <= 20:
+                raise ModelOutputError("find_data_paths的limit必须是1到20的整数")
+        if name == "find_entry_points":
+            framework = args.get("framework", "all")
+            if framework not in {"all", "spring", "jax_rs", "fastapi_flask", "django"}:
+                raise ModelOutputError("find_entry_points的framework不受支持")
+            limit = args.get("limit", 50)
+            if type(limit) is not int or not 1 <= limit <= 100:
+                raise ModelOutputError("find_entry_points的limit必须是1到100的整数")
         if name == "read_chunk" and (
             not text(args.get("chunk_id")) or len(args["chunk_id"]) > 200
         ):

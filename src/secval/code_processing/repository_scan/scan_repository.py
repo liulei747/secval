@@ -1,4 +1,4 @@
-"""查找代码仓库中的 Java 源文件。"""
+"""查找代码仓库中已支持的源文件。"""
 
 import os
 from pathlib import Path
@@ -19,8 +19,23 @@ IGNORED_DIRECTORIES = {
     "venv",
 }
 
-# 首版只处理 Java，增加其他语言时在这里加入对应扩展名。
-SUPPORTED_FILE_EXTENSIONS = {".java"}
+# 扫描器只放行已经有解析器和切块器的文件。
+SOURCE_EXTENSIONS_BY_LANGUAGE = {"java": ".java", "python": ".py"}
+SUPPORTED_FILE_EXTENSIONS = set(SOURCE_EXTENSIONS_BY_LANGUAGE.values())
+
+
+def is_supported_source(path: str) -> bool:
+    """判断路径是否属于已实现完整处理链的源码。"""
+    return Path(path).suffix.lower() in SUPPORTED_FILE_EXTENSIONS
+
+
+def language_for_source(path: str) -> str | None:
+    """根据已支持的扩展名返回语言，未支持时返回 None。"""
+    suffix = Path(path).suffix.lower()
+    for language, extension in SOURCE_EXTENSIONS_BY_LANGUAGE.items():
+        if suffix == extension:
+            return language
+    return None
 
 
 def scan_repository(root_path: str) -> list[str]:

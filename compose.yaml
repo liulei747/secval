@@ -15,6 +15,11 @@ services:
       - SECVAL_AUDIT_API_KEY=${SECVAL_AUDIT_API_KEY:-}
       - SECVAL_AUDIT_MODEL=${SECVAL_AUDIT_MODEL:-glm-5.3-flash}
       - SECVAL_AUDIT_DB=/audit-data/tasks.sqlite3
+      - SECVAL_INDEX_JOB_DB=/audit-data/index_jobs.sqlite3
+      - SECVAL_AUDIT_TIMEOUT_SECONDS=${SECVAL_AUDIT_TIMEOUT_SECONDS:-120}
+      - SECVAL_AUDIT_MAX_OUTPUT_TOKENS=${SECVAL_AUDIT_MAX_OUTPUT_TOKENS:-8192}
+      - SECVAL_AUDIT_THINKING=${SECVAL_AUDIT_THINKING:-}
+      - SECVAL_AUDIT_STREAM=${SECVAL_AUDIT_STREAM:-false}
       # 默认仍使用本地模型；在 .env 中设置为 api 即可切换远程向量服务。
       - SECVAL_EMBEDDING_PROVIDER=${SECVAL_EMBEDDING_PROVIDER:-local}
       - SECVAL_EMBEDDING_API_URL=${SECVAL_EMBEDDING_API_URL:-}
@@ -25,6 +30,13 @@ services:
       - SECVAL_EMBEDDING_API_TIMEOUT_SECONDS=${SECVAL_EMBEDDING_API_TIMEOUT_SECONDS:-120}
       # API 模型必须使用独立 Collection，不能与本地模型向量混用。
       - SECVAL_VECTOR_COLLECTION=${SECVAL_VECTOR_COLLECTION:-secval-code-vectors-qwen3-06b-v2}
+      - SECVAL_NEO4J_URI=neo4j://neo4j:7687
+      - SECVAL_NEO4J_USER=neo4j
+      - SECVAL_NEO4J_PASSWORD_FILE=/run/secrets/neo4j_auth
+      - SECVAL_JOERN_URL=http://joern:8080
+      - SECVAL_JOERN_USER=secval
+      - SECVAL_JOERN_PASSWORD_FILE=/run/secrets/joern_password
+      - SECVAL_JOERN_TIMEOUT_SECONDS=600
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -33,6 +45,10 @@ services:
       - audit-data:/audit-data
       # API 需要把浏览器上传的仓库保存到这个目录。
       - ./data/repositories:/repositories
+      - joern-inputs:/joern-inputs
+    secrets:
+      - neo4j_auth
+      - joern_password
     networks:
       - services
     depends_on:
@@ -40,6 +56,10 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      neo4j:
+        condition: service_healthy
+      joern:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test:
@@ -98,11 +118,74 @@ services:
       - services
     restart: unless-stopped
 
+  neo4j:
+    image: neo4j:2026.07.1
+    container_name: secval-neo4j
+    environment:
+      - NEO4J_AUTH_FILE=/run/secrets/neo4j_auth
+    secrets:
+      - neo4j_auth
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - neo4j-data:/data
+    networks:
+      - services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+
+  joern:
+    image: ghcr.io/joernio/joern:nightly@sha256:c7d307d262f87f51e48432fc18fcdc229a02d98bc557d3f0fa7de74b6021a351
+    container_name: secval-joern
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        joern --server --server-host 0.0.0.0 --server-port 8080
+        --server-auth-username secval
+        --server-auth-password "$$(cat /run/secrets/joern_password)"
+    environment:
+      - JAVA_OPTS=-Xmx2G
+    volumes:
+      - joern-inputs:/joern-inputs:ro
+      - joern-workspace:/app/workspace
+    secrets:
+      - joern_password
+    networks:
+      - services
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --silent --fail --user "secval:$$(cat /run/secrets/joern_password)"
+          --header 'Content-Type: application/json' --data '{"query":"\"SECVAL:1\""}'
+          http://localhost:8080/query-sync > /dev/null || exit 1
+      interval: 20s
+      timeout: 15s
+      retries: 18
+      start_period: 3m
+
 volumes:
   audit-data:
   opensearch-data:
   qdrant-data:
   huggingface-cache:
+  neo4j-data:
+  joern-inputs:
+  joern-workspace:
+
+secrets:
+  neo4j_auth:
+    file: ./config/neo4j_auth.txt
+  joern_password:
+    file: ./config/joern_password.txt
 
 networks:
   services:

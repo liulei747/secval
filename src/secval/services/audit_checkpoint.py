@@ -6,7 +6,7 @@ from secval.services.audit_context import compact_context, context_size
 
 STATE_FIELDS = ("evidence", "events", "security_boundaries", "threat_model_history",
                 "investigations", "finding_detail_history", "file_reviews", "baseline",
-                "read_coverage", "codeEvidence", "correction_count")
+                "read_coverage", "codeEvidence", "correction_count", "team_deliveries")
 
 
 def checkpoint(messages, state, *, phase="investigation"):

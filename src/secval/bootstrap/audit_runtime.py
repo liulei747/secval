@@ -17,12 +17,15 @@ def create_source_snapshot_store():
     return SourceSnapshotStore(str(Path(settings.database_path).with_name("sources.sqlite3")))
 
 
-def create_audit_service(connection):
+def create_audit_service(connection, search_service=None, graph_store=None, joern_client=None):
     settings = load_audit_settings()
 
     def model_factory():
         try:
-            return AuditModel(settings.api_url, settings.api_key, settings.model_name)
+            return AuditModel(settings.api_url, settings.api_key, settings.model_name,
+                              timeout_seconds=settings.timeout_seconds,
+                              max_output_tokens=settings.max_output_tokens, thinking=settings.thinking,
+                              stream=settings.stream)
         except ValueError:
             raise AuditUnavailableError("请配置独立的审计API地址、密钥和模型") from None
 
@@ -32,5 +35,7 @@ def create_audit_service(connection):
         store,
         ThreadPoolExecutor(max_workers=1),
         model_factory,
-        lambda repo, snapshot: EvidenceTools(connection, repo, snapshot, source_store),
+        lambda repo, snapshot: EvidenceTools(connection, repo, snapshot, source_store,
+                                             search_service=search_service, graph_store=graph_store,
+                                             joern_client=joern_client),
     )

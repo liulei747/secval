@@ -1,5 +1,7 @@
 from io import BytesIO
+import importlib
 from pathlib import Path
+import time
 from unittest.mock import MagicMock
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -15,6 +17,8 @@ from secval.models.identifiers import (
 )
 from secval.models.search import SearchResult
 from secval.web_api import create_search_app
+
+search_api_module = importlib.import_module("secval.web_api.search_api")
 
 
 def create_zip_file(files: dict[str, bytes]) -> bytes:
@@ -37,6 +41,8 @@ def create_runtime() -> MagicMock:
     runtime.embedding_model.model_name = "Qwen/Qwen3-Embedding-0.6B"
     runtime.reranker.provider_name = "none"
     runtime.reranker.model_name = None
+    runtime.code_graph_store = None
+    runtime.joern_client = None
     return runtime
 
 
@@ -122,6 +128,8 @@ def test_health_endpoint_reports_both_stores() -> None:
         "status": "healthy",
         "open_search": "available",
         "qdrant": "available",
+        "neo4j": "disabled",
+        "joern": "disabled",
         "embedding_provider": "local",
         "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
         "vector_collection": "secval-code-vectors-qwen3-06b-v2",
@@ -143,6 +151,65 @@ def test_health_endpoint_returns_503_when_qdrant_is_unavailable() -> None:
     assert response.status_code == 503
     assert response.json()["status"] == "unhealthy"
     assert response.json()["qdrant"] == "unavailable"
+
+
+def test_background_index_job_can_be_created_and_read(tmp_path, monkeypatch) -> None:
+    """后台索引路由应立即返回编号，并能通过同一编号读到结果。"""
+    monkeypatch.setenv("SECVAL_INDEX_JOB_DB", str(tmp_path / "jobs.sqlite3"))
+    monkeypatch.setattr(search_api_module, "_execute_index", lambda *args: object())
+    monkeypatch.setattr(
+        search_api_module,
+        "_index_result_dict",
+        lambda result: {"index_run_id": "run-1", "saved_chunks": 6},
+    )
+    request_body = {
+        "repository_id": "repository-1",
+        "repository_name": "Demo",
+        "repository_path": "demo",
+        "snapshot_id": "snapshot-1",
+        "version": "main",
+    }
+
+    with TestClient(create_search_app(create_runtime())) as client:
+        created = client.post("/api/repositories/index-jobs", json=request_body)
+        assert created.status_code == 202
+        job_id = created.json()["id"]
+
+        for _ in range(100):
+            current = client.get(f"/api/repositories/index-jobs/{job_id}")
+            if current.json()["status"] == "completed":
+                break
+            time.sleep(0.01)
+
+    assert current.status_code == 200
+    assert current.json()["stage"] == "已完成"
+    assert current.json()["result"] == {"index_run_id": "run-1", "saved_chunks": 6}
+    assert current.json()["created_at"] is not None
+    assert current.json()["finished_at"] is not None
+    assert current.json()["stage_history"][-1]["stage"] == "已完成"
+    assert current.json()["lease_state"] == "inactive"
+
+
+def test_background_index_job_returns_404_for_unknown_id(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SECVAL_INDEX_JOB_DB", str(tmp_path / "jobs.sqlite3"))
+
+    with TestClient(create_search_app(create_runtime())) as client:
+        response = client.get("/api/repositories/index-jobs/not-found")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "索引任务不存在"
+
+    with TestClient(create_search_app(create_runtime())) as client:
+        response = client.post("/api/repositories/index-jobs/not-found/recover-stale")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "索引任务不存在"
+
+    with TestClient(create_search_app(create_runtime())) as client:
+        response = client.post("/api/repositories/index-jobs/not-found/cancel")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "索引任务不存在"
 
 
 def test_search_endpoint_returns_code_results() -> None:

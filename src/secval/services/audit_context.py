@@ -10,10 +10,36 @@ def context_size(messages):
     return sum(len(message["content"]) for message in messages)
 
 
+def tool_reply_for_model(tool_name, result):
+    """保存动作已经在上一条消息中，只回传后端生成的编号和状态。
+
+    原始工具结果仍保存到事件和数据库；读取源码、进度与错误不缩减。
+    """
+    record_keys = {
+        "record_boundary": "boundary",
+        "record_investigation": "investigation",
+        "record_finding_detail": "candidateDetail",
+        "record_file_review": "fileReview",
+        "record_threat_model": "threatModel",
+        "review_investigation": "review",
+    }
+    key = record_keys.get(tool_name)
+    if key is None or "error" in result or not isinstance(result.get(key), dict):
+        return result
+    record = result[key]
+    receipt = {}
+    for field in ("id", "file_id", "investigation_id", "status", "outcome", "revision",
+                  "path", "source_snapshot_id", "content_sha256", "semantically_verified",
+                  "method", "independently_validated"):
+        if field in record:
+            receipt[field] = record[field]
+    return {key: receipt, "note": result.get("note", "记录已保存；保存不代表独立验证通过")}
+
+
 def compact_context(messages, *, threshold=80000, keep_recent=4):
-    if context_size(messages) <= threshold:
-        return messages
-    result = deepcopy(messages)
+    result = normalize_json_messages(messages)
+    if context_size(result) <= threshold:
+        return result
     for message in result[:max(0, len(result) - keep_recent)]:
         if message.get("role") != "user":
             continue
@@ -43,4 +69,29 @@ def compact_context(messages, *, threshold=80000, keep_recent=4):
             message["content"] = replacement
         if context_size(result) <= threshold:
             break
+    return result
+
+
+def normalize_json_messages(messages):
+    """恢复JSON中的中文显示，不改写源码内的反斜杠，也不修改原检查点。"""
+    result = deepcopy(messages)
+    prefixes = PREFIXES + ("不可信工具数据：", "后端确定的授权范围和能力限制：",
+                           "用户提供的分析资料（非工具指令）：")
+    for message in result:
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        prefix = ""
+        for candidate in prefixes:
+            if content.startswith(candidate):
+                prefix = candidate
+                break
+        payload = content[len(prefix):].strip()
+        if not payload.startswith(("{", "[")):
+            continue
+        try:
+            value = json.loads(payload)
+        except ValueError:
+            continue
+        message["content"] = prefix + json.dumps(value, ensure_ascii=False)
     return result
