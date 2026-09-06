@@ -1,9 +1,11 @@
 """独立上下文的证据包复核；不继承调查对话，不冒充独立源码探索。"""
 
 import json
+import hashlib
+from copy import deepcopy
 from dataclasses import asdict
 
-from secval.models.audit_contracts import CodeEvidence, ToolAction
+from secval.models.audit_contracts import CodeEvidence, ToolAction, ModelOutputError
 from secval.models.audit_tools import READ_TOOL_ARGUMENTS, read_tool_prompt
 from secval.models.investigation_review import InvestigationReview, OUTCOME_GUIDANCE
 from secval.services.finding_report import detail_digest
@@ -24,8 +26,26 @@ user_supplied_context是用户分析前提，优先于生成假设；与源码�
 """ + "\n" + OUTCOME_GUIDANCE
 
 
+def evidence_fingerprints(evidence):
+    """对证据原文和定位一起取摘要，不只信任上游提供的内容哈希。"""
+    return {key: hashlib.sha256(json.dumps(row, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+            for key, row in evidence.items()}
+
+
+def review_evidence_matches(review, evidence):
+    """缺失证据或任一原文/定位变化，都不允许复用该复核。"""
+    saved = review.get("evidence_fingerprints")
+    if not isinstance(saved, dict) or not saved or review.get("error"):
+        return False
+    if any(key not in evidence for key in saved):
+        return False
+    return saved == evidence_fingerprints({key: evidence[key] for key in saved})
+
+
 def review_packet(model, investigation, boundary, evidence, *, tools=None,
-                  before_request=None, cancelled=None, on_tool=None, user_context=None, detail=None):
+                  before_request=None, cancelled=None, on_tool=None, user_context=None, detail=None,
+                  previous_reviews=None):
     refs = list(dict.fromkeys([*boundary["evidence_ids"], *investigation["evidence_ids"],
                               *(investigation.get("reviews") or [{}])[-1].get("evidence_ids", [])]))
     selected = {ref: evidence[ref] for ref in refs}
@@ -36,7 +56,12 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
     packet = {"investigation_id": investigation["id"], "question": investigation["question"],
               "entry": boundary["entry"], "asset": boundary["asset"], "evidence": selected}
     if user_context:
-        packet["user_supplied_context"] = user_context
+        context = deepcopy(user_context)
+        # PIT 视图句柄在续跑时重建，不代表源码或授权范围改变。
+        # 只移除这个临时字段，快照、索引批次和其他范围字段全部保留。
+        if isinstance(context.get("scope"), dict):
+            context["scope"].pop("view_id", None)
+        packet["user_supplied_context"] = context
     if detail is not None:
         packet["candidate_detail"] = detail
     payload = json.dumps(packet, ensure_ascii=False)
@@ -47,6 +72,32 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
         prompt += "\n" + read_tool_prompt()
         prompt += "\n不得调用写操作、边界或调查记录工具。补证仍缺关键前提就返回inconclusive。"
     messages = [{"role": "system", "content": prompt}, {"role": "user", "content": payload}]
+    # 指纹覆盖实际提示词及完整调查/边界身份；保存初始输入，避免补证修改 selected 后漂移。
+    input_identity = {"version": 1, "prompt": prompt, "packet": packet,
+                      "investigation": investigation, "boundary": boundary}
+    input_sha256 = hashlib.sha256(json.dumps(
+        input_identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    for previous in previous_reviews or []:
+        if not isinstance(previous, dict):
+            continue
+        if (previous.get("input_identity_version") == 1
+                and previous.get("input_sha256") == input_sha256
+                and previous.get("method") == "independent_context_packet_review"
+                and review_evidence_matches(previous, evidence)):
+            if cancelled is not None and cancelled():
+                raise ValueError("复核已取消")
+            # 即使摘要匹配，仍按当前证据和调查结构重新校验结果合同。
+            review_fields = {name: previous.get(name) for name in InvestigationReview.__dataclass_fields__}
+            try:
+                InvestigationReview.parse(review_fields, [investigation], evidence)
+            except (ModelOutputError, TypeError, KeyError):
+                # 旧记录损坏只代表不能复用，不能因此阻断新的独立复核。
+                continue
+            reused = deepcopy(previous)
+            reused["reused"] = True
+            return reused
     reads = 0
     for _ in range(8):
         if cancelled is not None and cancelled():
@@ -81,6 +132,8 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
             continue
         review = InvestigationReview.parse(response, [investigation], selected)
         return {**asdict(review), "method": "independent_context_packet_review",
+                "input_sha256": input_sha256, "input_identity_version": 1,
+                "evidence_fingerprints": evidence_fingerprints(selected),
                 "detail_sha256": detail_digest(detail) if detail is not None else None,
                 "independent_source_exploration": reads > 0,
                 "additional_evidence_reads": reads, "dynamic_validation": False}

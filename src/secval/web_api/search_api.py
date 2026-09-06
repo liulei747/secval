@@ -16,6 +16,8 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import HTMLResponse
+from neo4j.exceptions import Neo4jError
 from opensearchpy.exceptions import OpenSearchException
 from pydantic import BaseModel, Field
 
@@ -45,6 +47,7 @@ from secval.services.index_job_service import (
     IndexProcessBusyError,
 )
 from secval.web_api.audit_api import router as audit_router
+from secval.web_api.workbench import router as workbench_router
 from secval.web_api.repository_upload import (
     UploadRepositoryResponse,
     save_uploaded_repository,
@@ -104,6 +107,25 @@ class SearchResponse(BaseModel):
 
     result_count: int
     results: list[SearchResultResponse]
+
+
+class CodeGraphRequest(BaseModel):
+    """指定一次已经完成的索引批次，查询其中的代码关系。"""
+
+    repository_id: str = Field(min_length=1)
+    snapshot_id: str = Field(min_length=1)
+    index_run_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    limit: int = Field(default=20, ge=1, le=50)
+    receiver_type: str | None = None
+
+
+class CodeGraphResponse(BaseModel):
+    """关系图查询只返回定位线索，不返回源码正文。"""
+
+    rows: list[dict]
+    index_run_id: str
+    relation_note: str
 
 
 class IndexRepositoryRequest(BaseModel):
@@ -245,7 +267,7 @@ def create_search_app(
 
         try:
             if active_runtime.joern_client is not None:
-                active_runtime.joern_client.verify()
+                active_runtime.joern_client.verify(timeout_seconds=5)
                 joern_status = "available"
         except Exception:
             joern_status = "unavailable"
@@ -289,6 +311,51 @@ def create_search_app(
         return RepositoryCatalogResponse(
             repositories=[IndexedRepositoryResponse(**scope) for scope in scopes]
         )
+
+    @app.get("/api/repositories/index-runs", response_model=list[str])
+    def list_index_runs(repository_id: str, snapshot_id: str, request: Request):
+        """列出某个仓库/快照仍有源码绑定的索引批次，供页面选择。"""
+
+        source_store = request.app.state.source_snapshot_store
+        return source_store.list_bound_runs(repository_id, snapshot_id)
+
+    @app.get("/api/repositories/unbound-snapshots")
+    def list_unbound_snapshots(request: Request, older_than_hours: float = 24):
+        """只读报告：从未绑定索引批次的快照。只报告不删除。
+
+        清理必须人工确认后另行操作；此端点不做任何写操作。
+        """
+        source_store = request.app.state.source_snapshot_store
+        if older_than_hours < 0:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                detail="older_than_hours 不能为负")
+        return {"rows": source_store.list_unbound_snapshots(older_than_hours),
+                "note": "只报告不删除；清理需人工确认，避免误删可取证快照"}
+
+    @app.delete("/api/repositories/unbound-snapshots/{snapshot_id}")
+    def delete_unbound_snapshot(snapshot_id: str, request: Request,
+                                older_than_hours: float = 24):
+        """人工确认后的显式清理：仅限从未绑定且超过时限的快照。
+
+        存储层二次校验绑定关系与保留时限；历史绑定快照永久保留。
+        """
+        source_store = request.app.state.source_snapshot_store
+        if older_than_hours < 0:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                detail="older_than_hours 不能为负")
+        try:
+            removed = source_store.delete_unbound_snapshot(snapshot_id,
+                                                           older_than_hours)
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=str(error)) from error
+        return {"deleted": True, "snapshot_id": snapshot_id,
+                "removed_file_rows": removed,
+                "note": "仅删除未绑定快照；已绑定历史取证数据不受影响"}
+
+    @app.get("/graph", response_class=HTMLResponse)
+    def graph_page() -> str:
+        return _render_graph_page()
 
     @app.post("/api/repositories/index-jobs", response_model=IndexJobResponse, status_code=202)
     def create_index_job(index_request: IndexRepositoryRequest, request: Request):
@@ -364,6 +431,151 @@ def create_search_app(
         return SearchResponse(
             result_count=len(result_responses),
             results=result_responses,
+        )
+
+    @app.post("/api/code-graph/symbols", response_model=CodeGraphResponse)
+    def find_code_symbols(
+        graph_request: CodeGraphRequest,
+        request: Request,
+    ) -> CodeGraphResponse:
+        """按名称查找指定索引批次内的符号声明。"""
+
+        graph_store = _require_code_graph(request)
+        try:
+            rows = graph_store.find_symbol(
+                graph_request.repository_id,
+                graph_request.snapshot_id,
+                graph_request.index_run_id,
+                graph_request.symbol,
+                graph_request.limit,
+            )
+        except Neo4jError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="查询Neo4j代码关系失败",
+            ) from error
+        return CodeGraphResponse(
+            rows=rows,
+            index_run_id=graph_request.index_run_id,
+            relation_note="DECLARES只表示文件声明了符号；请继续读取同一索引批次的源码核实",
+        )
+
+    @app.post("/api/code-graph/callers", response_model=CodeGraphResponse)
+    def find_code_callers(
+        graph_request: CodeGraphRequest,
+        request: Request,
+    ) -> CodeGraphResponse:
+        """按短名称查找静态调用者候选。"""
+
+        graph_store = _require_code_graph(request)
+        try:
+            rows = graph_store.find_callers(
+                graph_request.repository_id,
+                graph_request.snapshot_id,
+                graph_request.index_run_id,
+                graph_request.symbol,
+                graph_request.limit,
+            )
+        except Neo4jError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="查询Neo4j代码调用关系失败",
+            ) from error
+        return CodeGraphResponse(
+            rows=rows,
+            index_run_id=graph_request.index_run_id,
+            relation_note=(
+                "CALLS来自Tree-sitter；可确认时按接收者类型和参数个数缩小候选，请读取源码核实"
+            ),
+        )
+
+    @app.post("/api/code-graph/callees", response_model=CodeGraphResponse)
+    def find_code_callees(
+        graph_request: CodeGraphRequest,
+        request: Request,
+    ) -> CodeGraphResponse:
+        """查找指定调用者静态指向的目标符号。"""
+
+        graph_store = _require_code_graph(request)
+        try:
+            rows = graph_store.find_callees(
+                graph_request.repository_id,
+                graph_request.snapshot_id,
+                graph_request.index_run_id,
+                graph_request.symbol,
+                graph_request.limit,
+            )
+        except Neo4jError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="查询Neo4j被调用目标失败",
+            ) from error
+        return CodeGraphResponse(
+            rows=rows,
+            index_run_id=graph_request.index_run_id,
+            relation_note=(
+                "CALLS来自Tree-sitter；可确认时按接收者类型和参数个数缩小候选，请读取源码核实"
+            ),
+        )
+
+    @app.post("/api/code-graph/type-relations", response_model=CodeGraphResponse)
+    def find_type_relations(
+        graph_request: CodeGraphRequest,
+        request: Request,
+    ) -> CodeGraphResponse:
+        """查询继承、实现和方法覆盖关系。"""
+
+        graph_store = _require_code_graph(request)
+        try:
+            rows = graph_store.find_type_relations(
+                graph_request.repository_id,
+                graph_request.snapshot_id,
+                graph_request.index_run_id,
+                graph_request.symbol,
+                graph_request.limit,
+            )
+        except Neo4jError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="查询Neo4j类型关系失败",
+            ) from error
+        return CodeGraphResponse(
+            rows=rows,
+            index_run_id=graph_request.index_run_id,
+            relation_note=(
+                "EXTENDS/IMPLEMENTS/OVERRIDES来自Tree-sitter声明与仓库内类型解析；"
+                "未解析的外部类型不会生成边，请读取源码核实语义"
+            ),
+        )
+
+    @app.post("/api/code-graph/dispatch-targets", response_model=CodeGraphResponse)
+    def find_dispatch_targets(
+        graph_request: CodeGraphRequest,
+        request: Request,
+    ) -> CodeGraphResponse:
+        """查询同名方法在仓库内的动态分派实现候选。"""
+
+        graph_store = _require_code_graph(request)
+        try:
+            rows = graph_store.find_dispatch_targets(
+                graph_request.repository_id,
+                graph_request.snapshot_id,
+                graph_request.index_run_id,
+                graph_request.symbol,
+                graph_request.limit,
+                receiver_type=graph_request.receiver_type,
+            )
+        except Neo4jError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="查询Neo4j动态分派候选失败",
+            ) from error
+        return CodeGraphResponse(
+            rows=rows,
+            index_run_id=graph_request.index_run_id,
+            relation_note=(
+                "候选来自仓库内OVERRIDES边；没有候选不代表没有外部实现，请读取源码核实"
+            ),
         )
 
     @app.post(
@@ -467,7 +679,66 @@ def create_search_app(
         return IndexRepositoryResponse(**_index_result_dict(result))
 
     app.include_router(audit_router)
+    app.include_router(workbench_router)
     return app
+
+
+def _require_code_graph(request: Request):
+    """取得关系存储；未配置时给Web调用方明确错误。"""
+
+    graph_store = request.app.state.search_runtime.code_graph_store
+    if graph_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="当前未启用Neo4j代码关系服务",
+        )
+    return graph_store
+
+
+def _render_graph_page() -> str:
+    """渲染代码关系查询页面；只读，不展示源码正文。"""
+
+    return """<!doctype html><html lang="zh"><meta charset="utf-8">
+<title>Secval 代码关系查询</title><style>
+body{max-width:960px;margin:40px auto;font:16px system-ui;background:#f6f7fa;color:#243043}
+select,input,button{padding:10px;margin:8px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:20px}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccd3dd;padding:6px;text-align:left}
+</style><h1>代码关系查询</h1>
+<p>所有结果绑定仓库、快照和索引批次；只返回位置线索，不返回源码正文。候选必须回到固定快照源码核实。</p>
+<label>仓库/快照 <select id="repo"></select></label><br>
+<label>索引批次 <select id="runs"></select></label><br>
+<label>符号短名 <input id="symbol" placeholder="例如 run、Service"></label><br>
+<label>可选：接收者类型（用于分派过滤） <input id="receiver" placeholder="例如 Greeter"></label><br>
+<button id="symbols">声明</button><button id="callers">调用者</button>
+<button id="callees">调用目标</button><button id="types">类型关系</button>
+<button id="dispatch">分派候选</button>
+<p id="note"></p>
+<table><thead><tr><th>结果</th></tr></thead><tbody id="rows"></tbody></table>
+<details><summary>原始JSON</summary><pre id="raw">等待查询</pre></details>
+<script>
+const el=id=>document.getElementById(id);
+async function api(path,body){const r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});const d=await r.json();if(!r.ok)throw Error(d.detail||r.status);return d;}
+async function loadRepos(){const repos=await api('/api/repositories');el('repo').replaceChildren();
+for(const r of repos.repositories){const o=new Option(r.repository_id+' / '+r.snapshot_id,JSON.stringify({repository_id:r.repository_id,snapshot_id:r.snapshot_id}));el('repo').add(o);}
+if(repos.repositories.length)await loadRuns();}
+async function loadRuns(){if(!el('repo').value)return;const scope=JSON.parse(el('repo').value);
+const runs=await api('/api/repositories/index-runs?repository_id='+encodeURIComponent(scope.repository_id)+'&snapshot_id='+encodeURIComponent(scope.snapshot_id));
+el('runs').replaceChildren();for(const run of runs)el('runs').add(new Option(run,run));}
+async function query(path,extra){if(!el('repo').value||!el('runs').value){el('note').textContent='请先选择仓库和索引批次';return;}
+const scope=JSON.parse(el('repo').value);const body={repository_id:scope.repository_id,snapshot_id:scope.snapshot_id,index_run_id:el('runs').value,symbol:el('symbol').value,limit:20,...extra};
+try{const result=await api(path,body);el('note').textContent=result.relation_note||'';
+el('rows').replaceChildren();
+if(!result.rows.length){const row=document.createElement('tr');const cell=document.createElement('td');cell.textContent='（无结果）';row.appendChild(cell);el('rows').appendChild(row);}
+for(const row of result.rows){const tr=document.createElement('tr');const cell=document.createElement('td');cell.textContent=JSON.stringify(row);tr.appendChild(cell);el('rows').appendChild(tr);}
+el('raw').textContent=JSON.stringify(result,null,2);}catch(e){el('note').textContent=e.message;}}
+el('repo').onchange=loadRuns;
+el('symbols').onclick=()=>query('/api/code-graph/symbols');
+el('callers').onclick=()=>query('/api/code-graph/callers');
+el('callees').onclick=()=>query('/api/code-graph/callees');
+el('types').onclick=()=>query('/api/code-graph/type-relations');
+el('dispatch').onclick=()=>query('/api/code-graph/dispatch-targets',{receiver_type:el('receiver').value||null});
+loadRepos().catch(e=>el('note').textContent=e.message);
+</script></html>"""
 
 
 def _create_search_query(search_request: SearchRequest) -> SearchQuery:

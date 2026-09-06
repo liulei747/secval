@@ -14,6 +14,7 @@ class AuditSettings:
     max_output_tokens: int = 8192
     thinking: str | None = None
     stream: bool = False
+    tool_protocol: str = "json"
 
     def __post_init__(self):
         if self.thinking not in (None, "enabled", "disabled"):
@@ -22,6 +23,10 @@ class AuditSettings:
             raise ValueError("审计模型输出上限必须为256到32768 token")
         if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= 600:
             raise ValueError("审计模型单次请求超时必须为1到600秒")
+        if self.tool_protocol not in {"json", "native"}:
+            raise ValueError("审计工具协议必须为json或native")
+        if self.tool_protocol == "native" and self.stream:
+            raise ValueError("原生工具协议暂不与流式响应同时启用")
 
 
 def load_audit_settings():
@@ -37,4 +42,5 @@ def load_audit_settings():
         timeout_seconds=int(os.getenv("SECVAL_AUDIT_TIMEOUT_SECONDS", "120")),
         max_output_tokens=int(os.getenv("SECVAL_AUDIT_MAX_OUTPUT_TOKENS", "8192")),
         thinking=os.getenv("SECVAL_AUDIT_THINKING", "").strip() or None,
+        tool_protocol=os.getenv("SECVAL_AUDIT_TOOL_PROTOCOL", "json").strip().lower(),
     )

@@ -54,6 +54,11 @@ def test_unknown_arguments_are_rejected(tool):
         ToolAction.parse({"tool": tool, "arguments": {"execute": "anything"}})
 
 
+def test_type_relations_tool_is_documented_with_arguments():
+    assert "find_code_type_relations" in READ_TOOL_ARGUMENTS
+    assert "find_code_type_relations" in READ_TOOL_DESCRIPTIONS
+
+
 @pytest.mark.parametrize("tool", ["neo4j_query", "joern_query", "shell"])
 def test_unconnected_tools_are_not_advertised_as_available(tool):
     assert tool not in READ_TOOL_ARGUMENTS

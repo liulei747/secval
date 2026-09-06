@@ -19,6 +19,7 @@ from secval.models.audit_contracts import ModelOutputError, ModelRequestError
 from secval.models.agent_work import parse_work_result
 from secval.services.agent_team import AgentTeam, TeamStopped
 from secval.services.audit_service import AuditService
+from tests.audit.report_only_model import ReportOnlyModel
 from secval.services.audit_report import export_audit_report
 from secval.web_api.audit_api import router
 from tests.audit.test_service_flow import candidate_detail
@@ -187,7 +188,164 @@ def test_parallel_demo_through_web_and_report(tmp_path, with_detail):
                     assert "协作审计的主调查员" not in messages[0]["content"]
             assert report["completion"]["completeSecurityAudit"] is False
             assert "子Agent进度" in client.get("/audit").text
-            tools.close.assert_called_once()
+        # 预检和执行分别创建并关闭一次取证工具；测试工厂返回同一实例。
+        assert tools.close.call_count == 2
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("reason", ["step_limit", "time_limit"])
+def test_review_budget_stop_is_preserved_in_report(tmp_path, monkeypatch, reason):
+    records, lock, barrier = [], Lock(), Barrier(3)
+    original_request = AgentTeam.request
+
+    def stop_review(team, model, messages, agent_id):
+        if agent_id.startswith("review:"):
+            raise TeamStopped(reason)
+        return original_request(team, model, messages, agent_id)
+
+    monkeypatch.setattr(AgentTeam, "request", stop_review)
+    service = AuditService(AuditStore(tmp_path / "budget_report.sqlite3"),
+        ThreadPoolExecutor(max_workers=1),
+        lambda: ScriptedTeamModel(barrier, records, lock), lambda r, s: demo_tools())
+    try:
+        task = service.create(AuditTaskInput("复核预算报告验收", "demo", "demo-v1",
+            max_steps=40, allow_remote_code=True, parallel_agents=3))
+        service.future.result(timeout=15)
+        saved = service.get(task["id"])
+        assert saved["independent_reviews"]
+        for review in saved["independent_reviews"]:
+            assert review["stop_reason"] == reason
+            assert review["outcome"] == "inconclusive"
+            assert "耗尽" in review["error"]
+        assert not export_audit_report(saved).get("findings")
+    finally:
+        service.executor.shutdown(wait=True)
+
+
+def test_failed_review_retried_on_resume_completed_one_reused(tmp_path):
+    records, lock, barrier = [], Lock(), Barrier(3)
+    mode = {"resumed": False}
+    class FlakyReviewModel(ScriptedTeamModel):
+        def next_action(self, messages):
+            if "静态证据复核员" in messages[0]["content"]:
+                candidate_id = json.loads(messages[1]["content"])["investigation_id"]
+                # 只在父任务阶段让第二个复核失败；续跑时使用正常模型。
+                if candidate_id == "investigation-2" and not mode["resumed"]:
+                    raise ModelRequestError("模拟网络中断")
+            return super().next_action(messages)
+    class ResumedMainModel(ScriptedTeamModel):
+        def next_action(self, messages):
+            # 续跑时主调查直接重新提交报告，让验证阶段重新只处理复核。
+            if "静态证据复核员" not in messages[0]["content"] and len(
+                [m for m in messages if m["role"] == "system"]
+            ) and messages[0]["role"] == "system" and "协作审计的主调查员" in messages[0]["content"]:
+                return {"report": {"summary": "续跑合成报告", "hypotheses": [],
+                                   "unknowns": ["未执行应用"]}}
+            return super().next_action(messages)
+    service = AuditService(AuditStore(tmp_path / "retry_review.sqlite3"),
+        ThreadPoolExecutor(max_workers=1),
+        lambda: (ResumedMainModel(barrier, records, lock, True, None)
+                 if mode["resumed"] else FlakyReviewModel(barrier, records, lock, True, None)),
+        lambda r, s: demo_tools())
+    try:
+        task = service.create(AuditTaskInput("部分失败复核恢复验收", "demo", "demo-v1",
+            max_steps=40, allow_remote_code=True, parallel_agents=3))
+        service.future.result(timeout=15)
+        parent = service.get(task["id"])
+        assert parent["status"] == "needs_review", parent.get("error")
+        rows = parent["independent_reviews"]
+        assert rows[0]["investigation_id"] == "investigation-1"
+        assert not rows[0].get("error")
+        assert rows[1]["investigation_id"] == "investigation-2"
+        assert rows[1].get("error"), rows[1]
+        mode["resumed"] = True
+        child = service.resume(parent["id"], max_steps=30, allow_remote_code=True)
+        service.future.result(timeout=15)
+        resumed = service.get(child["id"])
+        assert resumed["status"] == "needs_review", resumed.get("error")
+        new_rows = resumed["independent_reviews"]
+        assert [row["investigation_id"] for row in new_rows] == ["investigation-1", "investigation-2"]
+        # 第一项完成结果被复用；第二项失败后重新独立复核成功。
+        assert new_rows[0].get("reused") is True
+        assert not new_rows[1].get("error"), new_rows[1]
+        assert new_rows[1].get("reused") is not True
+    finally:
+        service.close()
+
+
+def test_validation_phase_resume_reuses_matching_reviews(tmp_path):
+    records, lock, barrier = [], Lock(), Barrier(3)
+    mode = {"resumed": False}
+    service = AuditService(AuditStore(tmp_path / "validation_resume.sqlite3"),
+        ThreadPoolExecutor(max_workers=1),
+        lambda: ReportOnlyModel() if mode["resumed"] else ScriptedTeamModel(barrier, records, lock, True, None),
+        lambda r, s: demo_tools())
+    try:
+        task = service.create(AuditTaskInput("验证阶段恢复验收", "demo", "demo-v1",
+            max_steps=40, allow_remote_code=True, parallel_agents=3))
+        service.future.result(timeout=15)
+        parent = service.get(task["id"])
+        assert parent["status"] == "needs_review", parent.get("error")
+        assert [row["investigation_id"] for row in parent["independent_reviews"]] == [
+            "investigation-1", "investigation-2",
+        ]
+        assert all(not row.get("reused") for row in parent["independent_reviews"])
+        review_calls = sum(1 for role, _ in records if role == "review")
+        assert review_calls == 2
+        mode["resumed"] = True
+        child = service.resume(parent["id"], max_steps=30, allow_remote_code=True)
+        service.future.result(timeout=15)
+        resumed = service.get(child["id"])
+        assert resumed["status"] == "needs_review", resumed.get("error")
+        assert sum(1 for role, _ in records if role == "review") == review_calls
+        rows = resumed["independent_reviews"]
+        assert [row["investigation_id"] for row in rows] == [
+            "investigation-1", "investigation-2",
+        ]
+        assert all(row.get("reused") for row in rows)
+    finally:
+        service.close()
+
+
+def test_finished_second_review_is_saved_before_first_finishes(tmp_path):
+    second_saved = Event()
+    first_saw_saved = Event()
+    records, lock, barrier = [], Lock(), Barrier(3)
+    saved_orders = []
+
+    class ObservedStore(AuditStore):
+        def update(self, task_id, **changes):
+            task = super().update(task_id, **changes)
+            if "independent_reviews" in changes:
+                ids = [row["investigation_id"] for row in task.get("independent_reviews", [])]
+                saved_orders.append(ids)
+                if ids == ["investigation-2"]:
+                    second_saved.set()
+            return task
+
+    class OrderedModel(ScriptedTeamModel):
+        def next_action(self, messages):
+            if "静态证据复核员" in messages[0]["content"]:
+                candidate_id = json.loads(messages[1]["content"])["investigation_id"]
+                if candidate_id == "investigation-1":
+                    # 只有第二项已经写入数据库，第一项才能结束。
+                    if not second_saved.wait(timeout=5):
+                        raise ModelRequestError("第二项结果被第一项阻塞")
+                    first_saw_saved.set()
+            return super().next_action(messages)
+
+    store = ObservedStore(tmp_path / "completion_order.sqlite3")
+    service = AuditService(store, ThreadPoolExecutor(max_workers=1),
+        lambda: OrderedModel(barrier, records, lock), lambda r, s: demo_tools())
+    try:
+        task = service.create(AuditTaskInput("合成完成顺序验收", "demo", "demo-v1",
+            max_steps=40, allow_remote_code=True, parallel_agents=3))
+        service.future.result(timeout=15)
+        assert first_saw_saved.is_set()
+        assert saved_orders[0] == ["investigation-2"]
+        assert saved_orders[-1] == ["investigation-1", "investigation-2"]
+        assert service.get(task["id"])["status"] == "needs_review"
     finally:
         service.close()
 
@@ -219,6 +377,187 @@ def test_budget_reservations_are_atomic(tmp_path):
         assert sum(outcomes) == 7
         assert store.get(task_id)["model_calls"] == 7
         assert sorted(row["call"] for row in store.get(task_id)["model_requests"]) == list(range(1, 8))
+    finally:
+        team.close()
+
+
+def test_reserved_worker_resumes_once_for_validation(tmp_path):
+    """报告前收尾：被预算保留暂停的子任务恢复后可用保留额度，主调查保留最后报告调用。"""
+
+    team, store, task_id = make_team(tmp_path, max_steps=12)
+    # 本测试只验证调度簿记；线程池换成桩，避免后台worker与断言抢预算。
+    from concurrent.futures import Future
+    done = Future()
+    done.set_result(None)
+    team.pool = type("StubPool", (), {"submit": staticmethod(lambda fn, *a, **k: done),
+                                      "shutdown": staticmethod(lambda wait=True, cancel_futures=True: None)})()
+    store.update(task_id, agent_tasks=[{
+        "id": "agent-1", "role": "investigator", "status": "stopped", "calls": 3,
+        "assignment": {}, "evidence": {}, "events": [], "stop_reason": "reserved_for_main",
+    }])
+    try:
+        # 预算已进入保留区（9 >= 12 - 3），普通子任务此刻不能请求。
+        store.update(task_id, model_calls=9)
+        model = MagicMock()
+        model.next_action.return_value = {"result": result()}
+        with pytest.raises(TeamStopped, match="reserved_for_main"):
+            team.request(model, [], "agent-1")
+
+        assert team.resume_for_validation() is True
+        saved = next(row for row in store.get(task_id)["agent_tasks"] if row["id"] == "agent-1")
+        assert saved["status"] == "queued"
+        assert saved["validation_resume"] is True
+        assert saved["stop_reason"] is None
+
+        # 恢复后的子任务可以消费保留额度（第10次调用）。
+        assert team.request(model, [], "agent-1") == {"result": result()}
+        assert store.get(task_id)["model_calls"] == 10
+
+        # 主调查仍保留最后一次报告调用；收尾子任务在第11次被再次暂停。
+        store.update(task_id, model_calls=11)
+        with pytest.raises(TeamStopped, match="reserved_for_main"):
+            team.request(model, [], "agent-1")
+
+        # 每个子任务最多恢复一次，避免无限重启。
+        assert team.resume_for_validation() is False
+    finally:
+        team.close()
+
+
+def test_review_channel_uses_last_remaining_call_but_cannot_exceed_budget(tmp_path):
+    """复核可以使用最后一次剩余额度，但耗尽后不能继续发送请求。"""
+
+    team, store, task_id = make_team(tmp_path, max_steps=12)
+    store.update(task_id, agent_tasks=[{
+        "id": "review:investigation-1", "role": "review", "status": "running", "calls": 0,
+        "assignment": {}, "evidence": {}, "events": [], "stop_reason": None,
+    }])
+    try:
+        model = MagicMock()
+        model.next_action.return_value = {}
+        store.update(task_id, model_calls=12, phase="validation")
+        with pytest.raises(TeamStopped, match="step_limit"):
+            team.request(model, [], "review:investigation-1")
+        model.next_action.assert_not_called()
+
+        store.update(task_id, model_calls=11)
+        with pytest.raises(TeamStopped, match="reserved_for_review"):
+            team.request(model, [], "main")
+        assert team.request(model, [], "review:investigation-1") == {}
+        assert store.get(task_id)["model_calls"] == 12
+        model.next_action.assert_called_once()
+    finally:
+        team.close()
+
+
+def test_concurrent_reviews_cannot_share_the_last_budget_slot(tmp_path):
+    team, store, task_id = make_team(tmp_path, max_steps=12)
+    store.update(task_id, model_calls=11, phase="validation")
+    ready = Barrier(2)
+    model = MagicMock()
+    model.next_action.return_value = {}
+
+    def request_review(number):
+        ready.wait(timeout=2)
+        try:
+            team.request(model, [], "review:" + str(number))
+            return "sent"
+        except TeamStopped as error:
+            return str(error)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(request_review, [1, 2]))
+        assert sorted(outcomes) == ["sent", "step_limit"]
+        assert store.get(task_id)["model_calls"] == 12
+        assert len(store.get(task_id)["model_requests"]) == 1
+        model.next_action.assert_called_once()
+    finally:
+        team.close()
+
+
+def test_budget_paused_workers_keep_state_on_resume(tmp_path):
+    """续跑不立即重跑被预算保留/单任务上限暂停的子任务，新预算留给主调查。"""
+
+    team, store, task_id = make_team(tmp_path, max_steps=12)
+    store.update(task_id, agent_tasks=[
+        {"id": "agent-1", "role": "investigator", "status": "stopped", "calls": 4,
+         "assignment": {}, "evidence": {}, "events": [], "stop_reason": "reserved_for_main"},
+        {"id": "agent-2", "role": "investigator", "status": "stopped", "calls": 4,
+         "assignment": {}, "evidence": {}, "events": [], "stop_reason": "worker_step_limit"},
+        {"id": "agent-3", "role": "investigator", "status": "failed", "calls": 2,
+         "assignment": {}, "evidence": {}, "events": [], "stop_reason": "model_request_failed"},
+    ])
+    from concurrent.futures import Future
+    done = Future()
+    done.set_result(None)
+    team.pool = type("StubPool", (), {"submit": staticmethod(lambda fn, *a, **k: done),
+                                      "shutdown": staticmethod(lambda wait=True, cancel_futures=True: None)})()
+    try:
+        team.start()
+
+        rows = {row["id"]: row for row in store.get(task_id)["agent_tasks"]}
+        # 预算类暂停保持stopped，等待主调查报告前收尾。
+        assert rows["agent-1"]["status"] == "stopped"
+        assert rows["agent-1"]["stop_reason"] == "reserved_for_main"
+        assert rows["agent-2"]["status"] == "stopped"
+        assert rows["agent-2"]["stop_reason"] == "worker_step_limit"
+        # 真实失败者恢复独立对话续跑。
+        assert rows["agent-3"]["status"] == "queued"
+        # 历史调用都转入prior计数，不重复统计。
+        assert rows["agent-1"]["prior_calls"] == 4
+        assert rows["agent-3"]["prior_calls"] == 2
+    finally:
+        team.close()
+
+
+
+@pytest.mark.parametrize("action", ["progress", "completed", "cancelled"])
+def test_waiting_main_is_woken_without_model_polling(tmp_path, action):
+    """用真实线程等待，验证结果事件和取消都能结束等待且不消耗模型调用。"""
+    from concurrent.futures import Future
+
+    team, store, task_id = make_team(tmp_path)
+    evidence = {"read-1": demo_row()}
+    store.update(task_id, agent_tasks=[{
+        "id": "agent-1", "role": "baseline", "status": "running",
+        "calls": 1, "assignment": {}, "evidence": evidence, "events": [],
+    }])
+    worker_future = Future()
+    team.futures["agent-1"] = worker_future
+    entered_wait = Event()
+    original_wait = team.changed.wait
+
+    def observe_wait(timeout):
+        entered_wait.set()
+        return original_wait(timeout)
+
+    team.changed.wait = observe_wait
+    before_calls = store.get(task_id).get("model_calls")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as waiting_pool:
+            waiting = waiting_pool.submit(team.wait_for_result)
+            assert entered_wait.wait(2), "主线程未进入等待"
+            assert not waiting.done()
+            if action == "progress":
+                team.submit_worker_progress("agent-1", result([question()]), evidence)
+            elif action == "completed":
+                team.update_worker("agent-1", status="completed", result=result([question()]))
+                worker_future.set_result(None)
+            else:
+                store.update(task_id, status="cancelled")
+            if action == "cancelled":
+                with pytest.raises(TeamStopped, match="cancelled"):
+                    waiting.result(timeout=3)
+            else:
+                waiting.result(timeout=3)
+                messages = []
+                assert team.deliver(messages, {}, []) == 1
+                assert "子任务" in messages[0]["content"]
+                assert team.deliver(messages, {}, []) == 0
+                if action == "progress":
+                    assert not worker_future.done()
+            assert store.get(task_id).get("model_calls") == before_calls
     finally:
         team.close()
 
@@ -536,6 +875,7 @@ def test_team_requires_bound_source_before_any_model_call(tmp_path):
             service.create(AuditTaskInput("合成未绑定快照检查", "demo", "demo-v1", allow_remote_code=True,
                                            parallel_agents=3))
         model.next_action.assert_not_called()
-        tools.close.assert_called_once()
+        # 预检失败时只创建并关闭一次取证工具，不会进入执行阶段。
+        assert tools.close.call_count == 1
     finally:
         service.close()

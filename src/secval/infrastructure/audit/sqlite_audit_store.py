@@ -48,7 +48,17 @@ class AuditStore:
                 ).fetchall()
                 for task_id, task_json, cancel_requested in rows:
                     task = json.loads(task_json)
-                    if task["status"] not in ("queued", "running"):
+                    if task["status"] == "queued":
+                        # 排队任务没有执行者，重启后仍可被新服务消费。
+                        if cancel_requested:
+                            task.update(status="cancelled", finished_at=_now())
+                            db.execute("UPDATE tasks SET data=? WHERE id=?", (json.dumps(task), task_id))
+                            db.execute(
+                                "UPDATE audit_task_runtime SET heartbeat_at=?,lease_expires_at=NULL "
+                                "WHERE task_id=?", (_now(), task_id),
+                            )
+                        continue
+                    if task["status"] != "running":
                         continue
                     final_status = "cancelled" if cancel_requested else "interrupted"
                     stop_reason = "user_cancelled" if cancel_requested else "service_restarted"
@@ -148,6 +158,42 @@ class AuditStore:
                 )
             return task
 
+    def next_queued(self):
+        """读取最早排队任务；真正归属由claim的条件更新决定。"""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT id FROM tasks WHERE json_extract(data,'$.status')='queued' "
+                "ORDER BY rowid LIMIT 1"
+            ).fetchone()
+        return self.get(row[0]) if row is not None else None
+
+    def queue_position(self, task_id):
+        """按创建顺序计算排队位置；非queued任务返回None。"""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT rowid,json_extract(data,'$.status') FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            if row[1] != "queued":
+                return None
+            return db.execute(
+                "SELECT COUNT(*) FROM tasks WHERE json_extract(data,'$.status')='queued' "
+                "AND rowid<=?", (row[0],),
+            ).fetchone()[0]
+
+    def queue_counts(self):
+        """返回队列深度统计；只读，不需要锁。"""
+        with self.connect() as db:
+            counts = {"queued": 0, "running": 0}
+            for status, total in db.execute(
+                "SELECT json_extract(data,'$.status') AS status, COUNT(*) FROM tasks "
+                "WHERE json_extract(data,'$.status') IN ('queued','running') GROUP BY 1",
+            ):
+                counts[status] = total
+        return counts
+
     def claim(self, task_id, worker_id, lease_seconds):
         """原子认领排队任务；运行信息写入独立表，不碰调查正文。"""
         started_at = _now()
@@ -186,14 +232,27 @@ class AuditStore:
 
     def request_cancel(self, task_id):
         """跨进程记录取消信号，不重写可能正在变化的调查正文。"""
-        with self.connect() as db:
-            row = db.execute("SELECT data FROM tasks WHERE id=?", (task_id,)).fetchone()
-            if row is None:
-                raise KeyError(task_id)
-            task = json.loads(row[0])
-            if task["status"] in ("queued", "running"):
-                db.execute("UPDATE audit_task_runtime SET cancel_requested=1 WHERE task_id=?",
-                           (task_id,))
+        with self.lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT data FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if row is None:
+                    raise KeyError(task_id)
+                task = json.loads(row[0])
+                runtime = db.execute(
+                    "SELECT worker_id FROM audit_task_runtime WHERE task_id=?", (task_id,),
+                ).fetchone()
+                if task["status"] == "queued" and runtime[0] is None:
+                    # 没有执行者的排队任务可以直接收口，避免Worker认领后才发现取消。
+                    task.update(status="cancelled", finished_at=_now())
+                    db.execute("UPDATE tasks SET data=? WHERE id=?", (json.dumps(task), task_id))
+                    db.execute(
+                        "UPDATE audit_task_runtime SET heartbeat_at=?,lease_expires_at=NULL "
+                        "WHERE task_id=?", (_now(), task_id),
+                    )
+                elif task["status"] in ("queued", "running"):
+                    db.execute("UPDATE audit_task_runtime SET cancel_requested=1 WHERE task_id=?",
+                               (task_id,))
         return self.get(task_id)
 
     def finish_execution(self, task_id, worker_id):
@@ -208,7 +267,7 @@ class AuditStore:
                 ).fetchone()
                 if runtime is None:
                     return False
-                if runtime[0] != worker_id and not (runtime[0] is None and runtime[1]):
+                if runtime[0] != worker_id and runtime[0] is not None:
                     return False
                 if runtime[1]:
                     row = db.execute("SELECT data FROM tasks WHERE id=?", (task_id,)).fetchone()

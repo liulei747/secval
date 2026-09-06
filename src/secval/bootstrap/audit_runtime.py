@@ -25,7 +25,7 @@ def create_audit_service(connection, search_service=None, graph_store=None, joer
             return AuditModel(settings.api_url, settings.api_key, settings.model_name,
                               timeout_seconds=settings.timeout_seconds,
                               max_output_tokens=settings.max_output_tokens, thinking=settings.thinking,
-                              stream=settings.stream)
+                              stream=settings.stream, tool_protocol=settings.tool_protocol)
         except ValueError:
             raise AuditUnavailableError("请配置独立的审计API地址、密钥和模型") from None
 

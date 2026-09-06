@@ -20,6 +20,8 @@ services:
       - SECVAL_AUDIT_MAX_OUTPUT_TOKENS=${SECVAL_AUDIT_MAX_OUTPUT_TOKENS:-8192}
       - SECVAL_AUDIT_THINKING=${SECVAL_AUDIT_THINKING:-}
       - SECVAL_AUDIT_STREAM=${SECVAL_AUDIT_STREAM:-false}
+      # json兼容供应商；native显式启用OpenAI兼容的tools/tool_calls只读工具协议。
+      - SECVAL_AUDIT_TOOL_PROTOCOL=${SECVAL_AUDIT_TOOL_PROTOCOL:-json}
       # 默认仍使用本地模型；在 .env 中设置为 api 即可切换远程向量服务。
       - SECVAL_EMBEDDING_PROVIDER=${SECVAL_EMBEDDING_PROVIDER:-local}
       - SECVAL_EMBEDDING_API_URL=${SECVAL_EMBEDDING_API_URL:-}
@@ -151,7 +153,8 @@ services:
         --server-auth-username secval
         --server-auth-password "$$(cat /run/secrets/joern_password)"
     environment:
-      - JAVA_OPTS=-Xmx2G
+      # Joern会长期保留CPG和Scala REPL状态；2G在连续多项目分析后已经实测OOM。
+      - JAVA_OPTS=-Xmx4G
     volumes:
       - joern-inputs:/joern-inputs:ro
       - joern-workspace:/app/workspace
@@ -164,7 +167,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          curl --silent --fail --user "secval:$$(cat /run/secrets/joern_password)"
+          curl --silent --fail --max-time 10 --user "secval:$$(cat /run/secrets/joern_password)"
           --header 'Content-Type: application/json' --data '{"query":"\"SECVAL:1\""}'
           http://localhost:8080/query-sync > /dev/null || exit 1
       interval: 20s

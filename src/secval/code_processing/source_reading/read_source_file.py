@@ -2,18 +2,12 @@
 
 from pathlib import Path
 
+from secval.code_processing.repository_scan import language_for_source
 from secval.models.code import SourceFile
 from secval.models.identifiers import FileId, RepositoryId, SnapshotId
 
 # 默认最多读取 2 MiB，避免异常大文件占用过多内存。
 DEFAULT_MAX_FILE_SIZE = 2 * 1024 * 1024
-
-# 文件扩展名和编程语言的对应关系。
-FILE_LANGUAGES = {
-    ".java": "java",
-    ".py": "python",
-}
-
 
 def read_source_file(
     root_path: str,
@@ -58,7 +52,7 @@ def read_source_file(
     if not source_path.is_file():
         raise ValueError(f"源文件路径不是文件：{relative_path}")
 
-    language = FILE_LANGUAGES.get(source_path.suffix.lower())
+    language = language_for_source(source_path.name)
 
     if language is None:
         raise ValueError(f"暂不支持此文件类型：{relative_path}")

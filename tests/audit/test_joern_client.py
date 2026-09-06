@@ -2,15 +2,17 @@
 
 from unittest.mock import MagicMock
 import base64
+from threading import Event, Thread
 
 import pytest
 
 from secval.infrastructure.joern import JoernClient
+from secval.bootstrap import joern_runtime
 
 
 def test_import_code_saves_generated_dataflow_overlay():
     client = JoernClient("http://joern:8080")
-    client._query = MagicMock(side_effect=["", '"SECVAL:1"', "", ""])
+    client._query = MagicMock(side_effect=["", '"SECVAL:1"', "", "", ""])
 
     project = client.import_code("/joern-inputs/demo", "run-1")
 
@@ -20,6 +22,7 @@ def test_import_code_saves_generated_dataflow_overlay():
         'open("secval-run-1"); "SECVAL:" + cpg.metaData.size',
         "run.ossdataflow",
         "save",
+        'close("secval-run-1")',
     ]
 
 
@@ -37,6 +40,7 @@ def test_find_calls_builds_fixed_query_and_parses_rows():
     query = client._query.call_args_list[-1].args[0]
     assert 'open("secval-run-1-java")' in query
     assert 'nameExact("fetch")' in query
+    assert 'close("secval-run-1-java")' in query
 
 
 @pytest.mark.parametrize("method", ['fetch\")', "a.b", "name with space"])
@@ -63,6 +67,7 @@ def test_find_data_paths_returns_locations_without_source_code():
         {"node_type": "CALL", "path": "src/Order.java", "line": 8},
     ]}]
     assert "reachableByFlows" in client._query.call_args_list[-1].args[0]
+    assert 'close("secval-run-1-java")' in client._query.call_args_list[-1].args[0]
 
 
 def test_find_calls_combines_language_projects():
@@ -82,3 +87,102 @@ def test_find_calls_combines_language_projects():
     assert {(row["path"], row["line"]) for row in rows} == {
         ("Safe.java", 4), ("service.py", 9)
     }
+
+
+def test_javascript_uses_its_own_joern_project():
+    assert JoernClient._project_name("run-1", "javascript") == (
+        "secval-run-1-javascript"
+    )
+
+
+def test_health_check_uses_its_own_short_timeout():
+    client = JoernClient("http://joern:8080", timeout_seconds=600)
+    client._query = MagicMock(return_value='"SECVAL:1"')
+
+    client.verify(timeout_seconds=5)
+
+    client._query.assert_called_once_with('"SECVAL:1"', timeout_seconds=5)
+
+
+def test_query_timeout_also_limits_waiting_for_the_client_lock():
+    client = JoernClient("http://joern:8080")
+    client.lock = MagicMock()
+    client.lock.acquire.return_value = False
+
+    with pytest.raises(RuntimeError, match="等待已超时"):
+        client._query('"SECVAL:1"', timeout_seconds=0.01)
+
+    client.lock.acquire.assert_called_once_with(timeout=0.01)
+    client.lock.release.assert_not_called()
+
+
+def test_health_check_cannot_interrupt_a_multi_step_import(monkeypatch):
+    """导入步骤之间仍持锁时，短健康检查应超时而不是切换活动项目。"""
+
+    class Response:
+        def __init__(self, stdout):
+            self.payload = ('{"stdout": ' + repr(stdout).replace("'", '"') + '}').encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *args):
+            return self.payload
+
+    def fake_urlopen(request, timeout):
+        query = request.data.decode("utf-8")
+        if "metaData.size" in query:
+            return Response("SECVAL:1")
+        return Response("")
+
+    monkeypatch.setattr(
+        "secval.infrastructure.joern.joern_client.urlopen", fake_urlopen
+    )
+    client = JoernClient("http://joern:8080", timeout_seconds=1)
+    original_query = client._query
+    between_steps = Event()
+    allow_import_to_continue = Event()
+
+    def pause_after_first_step(query, timeout_seconds=None):
+        output = original_query(query, timeout_seconds)
+        if query.startswith("importCode"):
+            between_steps.set()
+            allow_import_to_continue.wait(timeout=1)
+        return output
+
+    client._query = pause_after_first_step
+    import_errors = []
+
+    def run_import():
+        try:
+            client.import_code("/code", "run-1")
+        except Exception as error:
+            import_errors.append(error)
+
+    worker = Thread(target=run_import)
+    worker.start()
+    assert between_steps.wait(timeout=1)
+
+    with pytest.raises(RuntimeError, match="等待已超时"):
+        client.verify(timeout_seconds=0.01)
+
+    allow_import_to_continue.set()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert import_errors == []
+
+
+def test_runtime_creation_does_not_block_on_joern_health(monkeypatch):
+    fake_client = MagicMock()
+    monkeypatch.setenv("SECVAL_JOERN_URL", "http://joern:8080")
+    monkeypatch.setenv("SECVAL_JOERN_PASSWORD", "test-password")
+    monkeypatch.delenv("SECVAL_JOERN_PASSWORD_FILE", raising=False)
+    monkeypatch.setattr(joern_runtime, "JoernClient", MagicMock(return_value=fake_client))
+
+    created = joern_runtime.create_optional_joern_client()
+
+    assert created is fake_client
+    fake_client.verify.assert_not_called()

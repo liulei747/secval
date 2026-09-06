@@ -2,9 +2,9 @@
 
 ## 多Agent协作更新（优先于下方串行阶段记录）
 
-2026-09-05：对照DeepSeek Harness的continuable宿主实现，新增子Agent阶段成果提交。候选、反证、未知项和审阅声明先校验并持久化，再向主调查精简回注；不再依赖最终大JSON一次成功。独立候选复核也已改为受Agent上限控制的并行请求，使用独立模型与局部证据缓冲，主线程再顺序合并；双候选并发屏障测试可以发现串行退化。原生`tools/tool_calls`因当前供应商方言尚未确认而未启用。
+2026-09-05：对照DeepSeek Harness的continuable宿主实现，新增子Agent阶段成果提交。候选、反证、未知项和审阅声明先校验并持久化，再向主调查精简回注；不再依赖最终大JSON一次成功。独立候选复核也已改为受Agent上限控制的并行请求，使用独立模型与局部证据缓冲，主线程再顺序合并；双候选并发屏障测试可以发现串行退化。原生`tools/tool_calls`现有显式可选模式，只用于只读取证工具并保持`tool_call_id`回传；当前供应商方言仍未实测，所以部署默认继续使用正文JSON兼容模式。
 
-同日主线继续：审计只读工具已接入`hybrid_search`。它先固定OpenSearch PIT和源码绑定批次，再做BM25、向量召回与RRF；不调用外部重排序，不返回源码正文，实时候选只有在PIT中仍存在且批次、仓库、快照、路径一致才返回。随后完成Neo4j声明关系、Joern调用位置和静态数据流工具；模型不能执行原生图查询。当前完整回归248项通过，合成仓库真实检查得到1个调用位置、4条数据流和3条相关声明。Joern数据流覆盖层已显式保存，重建容器后结果数不变。
+同日主线继续：审计只读工具已接入`hybrid_search`。它先固定OpenSearch PIT和源码绑定批次，再做BM25、向量召回与RRF；不调用外部重排序，不返回源码正文，实时候选只有在PIT中仍存在且批次、仓库、快照、路径一致才返回。随后完成Neo4j声明/双向静态调用关系、`EXTENDS`/`IMPLEMENTS`/`OVERRIDES`类型关系（含Agent工具`find_code_type_relations`）、Python继承/覆盖与`self.属性`/注解变量接收者推断、动态分派候选（支持`receiver_type`方向过滤）、继承方法返回值链、Joern调用位置和静态数据流工具；模型不能执行原生图查询。新增`GET /graph`关系查询页面和`GET /api/repositories/index-runs`批次列表，供人工核对同一批次的关系线索；审计报告新增`graphQuery`字段携带批次信息。Agent共享工具说明新增关系图推荐顺序（先声明定位、再双向展开、按需类型关系与分派候选）；框架入口识别补充Flask/FastAPI程序式路由注册（含嵌套命名空间）。当前最新完整回归330项通过。真实Neo4j与HTTP反例验证Java明确构造、字段、参数、局部变量、跨文件返回链、显式import限定、继承/覆盖关系、Python基类解析、self属性类型及双实现动态分派均只连接正确完整类型目标；冲突保持未知，测试结束只删除独立测试批次。Joern数据流覆盖层已显式保存，重建容器后结果数不变。
 
 已按用户要求改造为Web默认协作执行：主Agent与独立基线/架构子任务并行，支持分派专项调查、结果先保存后注入、共享预算和子任务检查点续跑。
 实现说明及小demo入口见根目录`agent-team-implementation.md`。保留旧串行任务兼容，不改变历史报告或已有用户索引。
@@ -16,8 +16,80 @@
 
 ## 最新执行状态（优先于下方历史记录）
 
+- 2026-09-06 复核共享调用上限修复：AgentTeam.request 不再允许 review: 绕过 max_steps；所有角色在同一锁内检查并占用额度。更正原来允许预算耗尽后继续请求的测试，新增双复核争用最后一次额度的并发回归，只有一次实际模型调用。协作 30 项、完整回归 459 项通过（2 项依赖弃用警告）。队列为空后重建并替换 API；本轮没有调用真实模型或修改用户索引。额度不足的复核仍保留未完成状态，不以自动超额换取结论。
+
+- 2026-09-06 continuable 等待专项验收：新增真实线程等待测试，覆盖运行中阶段成果唤醒、最终结果唤醒、取消后退出；结果仅交付一次，等待期间 model_calls 不增加。协作测试 29 项通过、1 项依赖弃用警告。本轮仅新增测试，无需部署。代码复查另发现 AgentTeam.request 对 review: 请求绕过 max_steps 限制，需继续核对独立复核是否存在无界超预算路径，不能宣称共享调用上限已被严格执行。
+
+- 2026-09-06 递归调用修复：真实 Neo4j demo 在旧版查询递归方法返回空数组，原因是建边条件 caller <> callee 无条件排除了自调用。删除该条件后，递归双向查询和重复调用位置验证均通过；22 项关系相关测试通过。API 已重建，容器已安装版本再次通过真实 demo。现有查询仅展开一层，保留自调用不会造成无限遍历。临时随机批次已清理，历史索引未修改；旧索引遗漏的递归边仍需后续重建恢复。
+
+- 2026-09-06 重复调用位置修复：CALLS 原先仅按调用者和目标合并，导致同一目标的后续调用位置丢失。现按批次内调用记录编号分别建边，同一调用的多个目标候选共享编号。22 项关系相关测试通过；benchmarks/check_repeated_graph_calls.py 在真实 Neo4j 验证第 3/5 行调用双向查询均保留，临时随机批次已清理。API 已部署，使用容器已安装代码重复真实验证通过。旧批次不修改，历史丢失位置须重建才能恢复；未调用模型或删除用户索引。
+
+- 2026-09-06 调用候选说明：确认 Neo4j 接收者未知时存在同名回退。find_callers/find_callees 读取结果新增 match_basis（full_receiver_type / short_receiver_type / name_only）及中文 match_note，明确仅同名不能证明调用链；共享 Agent 工具说明同步。读取时生成，因此旧批次也返回说明，不修改旧边。22 项关系存储与取证工具测试通过，API 已重建，容器内分类回归通过。类型依据来自历史保存值，不代表重新核验历史类型推断；本轮未宣称消除同名误候选。
+
+- 2026-09-06 部署核验：完整回归 454 项通过、2 项依赖弃用警告后，确认索引和审计队列均为空，重建并替换 secval-api。容器健康检查 healthy；在运行容器内直接执行 JS/TS 同名函数回归用例通过，证明已安装代码中的接收者修正生效。没有调用模型，没有重建或删除历史索引。注意：本次验证的是接收者标注；Neo4j 对未知接收者仍有同名候选回退规则，不能据此宣称所有错误 CALLS 候选已消除。
+
+- 2026-09-06 语义纠正：下方“JS/TS 隐式 this 裸调用修复”的结论有误。JS/TS 的裸调用 helper() 使用词法名称查找，不隐含 this；现已撤销将裸调用接收者设为 owner_type 的逻辑，显式 this.helper() 仍保留所属类。新增 JS 与 TS 同名外部函数/类方法回归，代码处理测试 88 项通过。本次源码修正尚未部署，历史索引中的错误关系也未自动重建；历史测试数量不能证明这些关系语义正确。
+
+- dispatch 工具与隐式 this 修复联动验证：mixed-demo 真实批次上 dispatch-targets 正确识别 Processor.process 为基方法（仓库内无覆写实现）。隐式 this 修复使更多调用点携带 receiver_type，分派候选自动受益。探针清理完毕，部署保持 healthy。
+- 隐式 this 修复副作用核验：自由函数内裸调用（helper()）receiver 仍为 None，无所属类时不产生错误归属；类方法内保持 receiver=Service。探针清理完毕。当前部署快照：453 项测试、API healthy、四服务 available。
+- JS/TS 隐式 this 裸调用修复：类方法内 stop() 这类无接收者的方法调用此前因 _receiver_type 首行守卫仅接受 member_expression 而直接返回 None；现在 identifier 调用返回 owner_type（类方法归属所属类，自由函数保持 None）。探针验证 stop() receiver=Service、case2 回归不变。取舍说明：闭包（含 function_expression）内裸调用统一归 owner_type，极少数全局同名函数调用可能被误标，方向偏保守补边。共 453 项通过；已部署验收（healthy）。未调用模型，未重建历史索引。
+- 部署验收：容器重建后 healthy，四服务 available，队列空闲。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。Python 闭包作用域修复上线后，三语言（Java/TS/Python）的闭包/嵌套函数调用图覆盖完成。
+- Python 嵌套函数词法作用域修复：闭包内 for 元素推断沿函数链向上找外层参数注解（原实现因 tree-sitter 的 function→body→block→function 层级断链而失败）；调试语句遗留曾导致异常被上层吞掉而误判为“类型未知”，已全部清除。新增 2 项测试（单元+全链路），共 453 项通过。本轮未部署。
+- JS/TS 闭包调用收集修复：嵌套箭头函数/函数表达式内的调用此前全部丢失（闭包不单独切块），现在归属外层函数并按词法作用域支持闭包内变量元素推断；类声明仍由类块收集。事件回调、Promise 链、数组方法回调中的调用不再漏掉。新增闭包测试，共 451 项通过。本轮未部署。
+- TS 返回链重载精度：this.method() 按实参个数过滤同名重载——pick(v: string)→First 与 pick()→Second 共存时，1 实参调用推断 First、0 实参调用推断 Second；参数个数相同无法区分时保持未知（与 Java 泛型重载保守原则一致）。新增双路径测试，共 450 项通过。本轮未部署。
+- 部署验收：容器重建后 healthy，iter_captured_files 搜索优化已生效。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。P2-12 字面搜索性能项完成。
+- P2-12 字面搜索性能优化：search_source 由“分页 inventory + 每文件二次 read 查询”改为单次 SQL 遍历（iter_captured_files，按 status='captured' 过滤、路径序分页惰性产出），并保留与 read() 相同的 sha256 完整性校验；返回结构、offset 语义与搜索注记不变。新增迭代器专项测试（顺序/等价/digest），共 449 项通过。本轮未部署。
+- 混合搜索三语言冒烟验证：mixed-demo 批次中文查询“订单提交处理”返回 8 条结果，覆盖 Java/TS/Python 三语言块（含 Java submit、TS Processor/Main、Python use），混合搜索与 RRF 在多语言同批次下工作正常。至此最近系列能力（元素推断、返回链、入口面、跨语言线索、范围拆分、复核恢复、token 核算）均已完成实现、测试与真实链路验证。可自主推进项无剩余；待用户输入：P2-13 认证决定、真实项目验收授权。
+- 三语言混合仓库真实链路验收：Java+TS+Python 混合 ZIP 上传、同批次索引 3 文件 11 块 11 向量成功（中途 Joern 短暂不可用导致一次失败，恢复后显式 resume 成功，符合失败重做设计）。Neo4j 同批次验证：Python for 循环 list[Item] 元素推断边、TS this 方法返回链边（receiver=Processor）与隐式 this 边均正确写入。演示仓库 mixed-demo 保留供页面查看。未调用模型。
+- 收口审计（对照目标逐项核对）：参考实现、复核恢复、中文文档、Web API、框架与多语言分析、长任务工程化、demo与448项自动测试、Docker链路部署验收、不外发不提前删除边界——均有当前代码与容器状态作为证据。目标剩余两项本质需要用户输入：P2-13 认证（当前设计为仅本机使用，是否实施由用户决定）、真实项目验收（需要用户提供授权项目）。在取得真实项目授权前，自动推进已无未覆盖的实施面，目标保持活跃等待用户输入。
+- 入口面补齐 Python 路由组织：APIRouter/Blueprint 声明与 include_router/register_blueprint 挂载点识别为 route 线索；工具说明同步。新增专项测试，全量 448 项通过；已部署验收（healthy，代码生效）。未调用模型，未重建历史索引。
+- 跨语言进程调用线索补齐 Node 侧：child_process 的 exec/spawn/execFile 及同步版本（express_koa 与 nestjs 两分支均识别）。测试扩至 7 个调用点（Python 3、Java 2、Node 2），共 447 项通过；已部署验收（healthy，代码生效）。三语言跨语言子进程边界覆盖完成。
+- 跨语言进程调用线索（P1-7 跨语言方向第一步）：find_entry_points 新增 cross_language_process 类别——Java（ProcessBuilder/Runtime.exec）与 Python（subprocess.run/Popen/os.system 等）的子进程调用点，是命令注入跨语言传播的候选路径。只报位置线索不生成 CALLS 边；工具说明同步更新。新增 5 调用点专项测试，全量 447 项通过；已部署验收（healthy，代码生效）。未调用模型，未重建历史索引。
+- 收尾清理：临时探针全部移除，工作区无遗留调试文件。阶段快照：446 项测试通过，secval-api healthy，四服务 available，队列空闲。可自主推进项全部完成；待用户输入项：P2-13 认证实施决定、真实项目验收授权。
+- 部署验收：容器重建后 healthy，四服务 available。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。三语言（Java/TS/Python）循环与数组元素推断至此对齐。
+- Python for 循环元素推断：for item in items（items: list[Item] 注解）现在推断 item 为 Item；仅接受 list[...] 形式且元素大写开头，裸 list 与其他泛型不猜。新增 process_repository 全链路测试，共 446 项通过。本轮未部署。
+- 部署验收：容器重建后 healthy，四服务 available。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。
+- TypeScript 数组元素推断：const first = items[0] 从 Item[] 参数声明推断元素类型 Item；_annotation_type 修复为保留数组 [] 标记（此前 Item[] 被错误剥成 Item，数组对象的方法会被误记到元素上——这同时修正了一个既有精度缺陷）。多维数组保持未知。新增下标推断与防误标测试，共 445 项通过。本轮未部署。
+- 部署验收：容器重建后 healthy，TS 返回类型链代码已生效。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。
+- TypeScript 返回类型链：const p = this.pick() 现在从同类方法 pick() 的返回类型注解推断 p 为 Processor（仅 this.method() 且带注解；泛型替换与外部方法保守未知）。_call_return_type 沿语法树向上找所属类。新增 process_repository 全链路测试，共 444 项通过。本轮未部署。
+- 部署验收：队列检查为空后重建 secval-api，health healthy。本条覆盖上一条“未部署”。至此复核恢复的最后一个声明边界也经验证收敛：补证随检查点恢复后指纹匹配即可复用，全部复用条件均有测试证据。
+- 复核恢复边界收敛：此前声明的“补证未随检查点恢复时保守重新复核”实际已不成立——evidence 在 STATE_FIELDS 中随检查点完整恢复，补证经 on_tool 回调写入 evidence，指纹含补证即可复用。新增端到端测试：复核中途 read_file 补证后续跑，指纹匹配则跳过模型直接 reused。全量 443 项通过；本轮未部署（仅新增测试）。
+- 审计页面收口状态新增可见性：任务完成后页面直接显示模型用量（输入+输出=总 token 及上报请求数）和范围子任务逐项交付状态；无需导出报告即可查看。全量 442 项通过；已部署验收（healthy，页面字段生效）。未调用模型，未重建历史索引。
+- P1-6 入口面补充（Node 侧）：NestJS 新增 @Processor（BullMQ 队列 worker，message_consumer）、@Interval/@Timeout（scheduler）。新增专项测试，全量 442 项通过；已部署验收（容器 healthy，grep 确认标记生效）。至此 Java、Python、NestJS 三侧消息/调度入口覆盖对称。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认新消息/调度入口标记已生效。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。
+- P1-6 入口面补充：Java 消息/调度入口新增 @JmsListener、@StreamListener、@ServiceActivator、@InboundChannelAdapter、@SqsListener、@RocketMQMessageListener（message_consumer）。新增专项测试，全量 441 项通过。本轮未部署。
+- 阶段快照（2026-09-06）：全量 440 项通过；secval-api healthy，OpenSearch/Qdrant/Neo4j/Joern 全 available，索引与审计队列空闲。文档已同步至实施状态文档（2026-09-06条目）。工作区存在大量未提交修改（按交接要求不做 git 操作，由用户决定纳入版本库）。另观察到主机上出现 codescan-v4-test-* 容器组（非本任务创建，未触碰）。可推进项仅剩：P2-13 认证（按边界保持仅本机）、真实项目验收（需用户授权与项目）。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认 scope 完成门槛已生效。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。P1-8 与 P2-9 联动完成：范围拆分 → 范围化报告 → 完成门槛把未交付范围压为 partial_report。
+- P1-8 报告门槛补齐 scope 缺口：范围子任务失败或未交付时，completion 状态被压到 partial_report，pendingReasons 明确列出未交付范围名；全部交付则不阻塞。coverage.scopeCoverage 现在在 report_completion 之前写入，保证完成判定读取到范围事实。新增 2 项门槛测试，全量 440 项通过。本轮未部署。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认 scopeCoverage 已上线。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。P2-9 拆分调度与范围化报告均已上线，剩余为真实大项目验收。
+- P2-9 收尾：导出报告新增 scopeCoverage 分组——每个 scope 子任务按范围名（取自分派标题）呈现状态、是否交付、摘要与问题数；失败或未交付即缺口并同时出现在 deferred。新增报告测试，全量 438 项通过。本轮未部署；P2-9 至此具备拆分调度与范围化报告两条腿，剩余为真实大项目验收。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认 _submit_scope_splits 已上线。本条覆盖上一条“未部署”。未调用模型，未重建历史索引。P2-9 下一步：scope 交付结果的范围归组汇总模板。
+- P2-9 范围拆分调度（第一步）：协作审计创建时若 scope_paths 覆盖多个顶层目录，自动按并行槽位分组提交 scope 角色子任务（仍受 12 上限、预算预留与复用约束；单目录不拆分）。新增分组逻辑单测与端到端验收（5 目录/2 槽位产生 2 个 scope 子任务）；全量 437 项通过。本轮未部署；范围子任务结果目前由主调查按普通交付处理，专项汇总模板待做。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认显式删除端点已上线。本条覆盖上一条“未部署”。未删除任何快照，未重建历史索引，未调用模型。P2-12 快照治理完整闭环：报告 → 人工确认 → 显式删除（三重校验）。
+- P2-12 孤立快照显式清理：新增 DELETE /api/repositories/unbound-snapshots/{id}；存储层二次校验（不存在/未超时限/已绑定均拒绝，历史绑定永久保留），删除 source_files 与快照行并返回行数。新增 4 项存储测试与 2 项 API 测试，共 435 项通过。本轮未部署；删除仍需调用方先查报告并人工确认。
+- 部署验收：队列检查为空后重建 secval-api，health healthy。真实容器验证 unbound-snapshots 端点：返回 5 条历史合成快照（均为旧库迁移前保存，age_known=false 单独标注，未误判年龄），note 明确只报告不删除。未重建历史索引，未调用模型，未删除任何快照。P2-12 第一步完成；后续可在人工确认后提供显式删除端点。
+- 孤立快照报告端点：新增只读 GET /api/repositories/unbound-snapshots（older_than_hours 可调，负值 422），只报告不删除；响应附清理需人工确认的说明。新增 2 项 API 测试，共 429 项通过。本轮未部署。
+- P2-12 孤立快照报告（第一步）：source_snapshots 新增 captured_at 时间列（自动迁移，旧库补列），capture 记录采集时间；新增 list_unbound_snapshots 只报告从未绑定索引批次的快照并区分时间已知/未知，不做自动删除——清理仍需人工确认，符合“不提前删除”原则。新增 3 项报告测试；capture 用具名列插入后修正了既有回滚测试的隐式列依赖。共 427 项通过；本轮未部署。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认 tokenUsage 字段已上线。本条覆盖上一条“未部署”。未重建历史索引，未调用模型。
+- 任务级 token 用量核算（P2-11）已实现：导出报告新增 tokenUsage 字段，累计供应商上报的 prompt/completion/total tokens，缺失字段的请求不计 0 并单独给出 requestsCountedBySupplier；新增 2 项测试，共 424 项通过。本轮未部署；费用仍是估算基础而非计费上限。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认继承链查找代码已上线。本条覆盖上一条“未部署”。未重建历史索引，未调用模型。
+- 增强 for 继承链：同文件子类继承 Iterable 容器（Shelter extends Kennel、Kennel implements Iterable<Animal>）时元素类型可推断；沿 superclass 向上查找并防循环。父类用类型变量实现 Iterable（Box<T> implements Iterable<T> 的子类）需要类型实参替换，保持未知。新增一正一反测试，共 420 项通过；本轮未部署。
+- 部署验收：队列检查为空后重建 secval-api，health healthy；容器内确认 _directly_iterable_element_type 已上线。本条覆盖上一条“未部署”记录。仍未重建历史索引，未调用模型；增强 for 剩余边界为多层继承实现与跨文件类型。
+- 增强 for 自定义容器：同文件类直接 implements Iterable<Item> 或 java.lang.Iterable<Item> 时按元素类型推断；泛型转发容器（如 Wrapper<T> implements Iterable<T>）保持未知。导入解析失败时不再把 None 传入后续函数（曾触发 AttributeError）。新增正反例测试，本轮未部署。
+- 增强 for 后置数组维度修复：参数和变量声明原始类型文本合并变量名后的 dimensions，避免 Item items[] 丢失数组信息及 Item[] items[] 被误当一维数组。新增一维/二维后置维度测试，尚未部署。
+- 增强 for 集合元素边界：失败测试复现 List<Item[]> 被误判为 Item，现数组元素保持未知；? extends Item 使用上界线索，? super Item 与无界 ? 保持未知。泛型实参分隔按嵌套深度识别逗号。新增五种元素场景测试，未部署本轮修改。
+- 增强 for 支持唯一显式标准集合导入，例如 import java.util.List 配合 List<Item>；存在文件内同名类型/类型参数时保留未知，避免套用标准集合语义。新增导入正例与类型参数遮蔽反例通过。通配导入、隐式 Iterable、自定义 Iterable 仍未实现；本轮未部署。
+- 部署更新：两次检查 /api/task-queues 均为空后重建并替换 secval-api（未重启其他服务）。容器内执行 5 项针对性回归，覆盖 lambda 词法上下文、泛型重载上界冲突、var 自引用、增强 for 参数/数组及字段遮蔽，全部通过；/api/health 返回 healthy，OpenSearch/Qdrant/Neo4j/Joern 均 available。本次未调用模型、未重建历史索引；旧 lambda-demo 错误边仍不能作为正确性证据。下方“尚未部署”是此前阶段记录，本条优先。
+- 修复 var 自引用初始化导致的递归崩溃：`var value = value.load()` 已由失败测试复现 RecursionError；查找点位于同一变量初始化表达式内时返回“找到但类型未知”，阻止重复解析同一初始化式和错误回退字段。新增回归测试通过，尚未部署。
+- 增强 for 原始类型查找继续补齐当前类字段、外层增强 for 变量和普通 for 初始化声明。新增内层变量遮蔽字段、退出循环恢复字段类型的测试；标准集合导入短名、自定义 Iterable 等仍待实现。尚未部署本轮修改，未重建历史索引。
+- 增强 for 的 var 推断新增参数和直接块内局部声明查找：支持明确全名的标准 List/Set/Collection/Iterable 和一维数组，兄弟块声明不会泄漏；多维数组不误连最内层元素方法。新增测试覆盖上述路径。仍缺字段、导入短名、自定义 Iterable 和更完整作用域处理，尚未完成增强 for 验收，本轮未部署。
+- 泛型重载纠错：同一短类型/方法名/参数个数下，每个声明先用自己的类型变量上界替换返回类型，再合并候选；不同上界不再被最后一个声明覆盖。新增同参数个数、不同上界的反例测试；无法区分实际重载时接收者保持未知。此修改及此前 lambda 纠错尚待部署验收，增强 for 推断仍未完成。
+- 更正此前 Lambda 验证结论：JLS 15.27.2 规定 lambda 中的显式/隐式 this 沿用外围上下文，并不指向函数式接口。已删除错误的目标类型替换逻辑，测试改用合法函数式接口，逐个核对 lambda 内 run() 为 Main、runner.run() 为 Runner。此前 lambda-demo 批次 65d1cb65-ab3d-408b-b633-8def56a1f307 返回第 5 行的 Runner 边属于错误证据，不能证明语义正确；历史索引尚未重建，读取时需核对源码。下方相关旧记录仅保留为历史，不能用于验收。增强 for 的 var 推断仍未完成，不能因已有回归通过宣称完成。
+- Java Lambda 接收者类型推断已补齐并通过真实链路验证：`var r = (Runner)() -> run(); r.run();` 现在能从 cast 目标类型推断接收者；仅当 cast 的值是 lambda 或方法引用时才采用，避免把字符串等普通 cast 误当类型。lambda 体内隐式 this 调用也会指向 lambda 的目标类型。含 1 项专项正反测试（共 404 项回归通过），Docker API 已重建部署，Neo4j 实际写入 `demo.Main.go()` -[CALLS receiver_type=Runner]-> `demo.Runner.run()`，Web API `find_code_callers` 能查到该边并返回完整名。
+- 继续 P1-7 补齐 var + new 接收者推断：`var s = new Service(); s.handle(v);` 之前接收者类型为空，现在直接从 object_creation_expression 读出类型；同时确认 lambda 捕获外部变量的调用（`() -> s.handle(v)`）已正确推断为 Service。旧测试 unknownVar 的期望从 None 更新为 RightService 以反映新语义。新增 1 项测试（共 405 项回归通过），Docker API 已重建部署并 healthy。
+- 继续 P1-7 补齐泛型方法上界推断：`<T extends Processor> T pick()` 声明的类型变量 T 现在会在建表时记录上界（type_parameters 的 type_bound），调用处 `var p = pick(); p.process();` 能按上界推断接收者类型为 Processor。此前 T 被 read_simple_java_type 当类型变量直接过滤成 None，bound 替换没有机会执行，调整了解析顺序。新增 1 项测试（共 406 项回归通过），Docker API 已重建部署并 healthy。
 - 用户已取消此前的跨任务总调用次数限制，继续推进；每个任务仍有调用、时长和连续格式错误保护，不盲目重试。
-- 当前本机完整回归为191项通过，1个既有Starlette依赖弃用警告；真实OpenSearch与SQLite快照取证检查再次通过。旧文档的236/258项不能代替本机结果。
+- 当前本机完整回归为400项通过，2个既有FastAPI/Starlette依赖弃用警告；真实OpenSearch、SQLite快照取证及Neo4j双向静态调用边、Java与Python类型关系、分派候选与继承返回值链均已用小样例核对。JavaScript和TypeScript/TSX第一阶段的扫描、解析、切块、基础调用、Express/Koa/NestJS入口以及OpenSearch/Qdrant/Neo4j/Joern正式Docker链路也已用合成demo验证。TypeScript接收者类型、静态命名导入别名、CommonJS require、命名空间成员、唯一默认导入、接口继承/类实现、可选参数调用和方法重写候选已进入仓库完整类型解析。旧文档的较小数字只代表历史阶段。
 - 最新API已重建，包含输出预算、中文上下文优化、结果含义澄清、部分报告续跑、取消保护及2小时取证租约；健康检查、审计页面和续跑路由已复查。没有重建用户索引。
 - 修复SQLite连接退出事务后未关闭的问题，避免Windows数据库锁；真实OpenSearch与SQLite快照取证检查通过。
 - 三阶段共享只读工具定义，增加剩余预算提示；格式纠错由累计三次停止改为连续三次停止，总调用限制继续保留。
@@ -25,15 +97,24 @@
 - 三类真实合成样例已取得报告，核心目标分别为supported/refuted/inconclusive。正例有匹配详情指纹的独立上下文支持发现；不能据此计算准确率或宣称完整质量通过，具体问题见下方记录。
 - 中文JSON规范化后，同一正例续跑输入由约39700 token降到14700（约63%）；这不保证生成速度。保存动作回执只返回编号和状态，完整输入与结果仍留在历史记录。
 - 正式独立审计模型由用户自行配置（本轮已明确）；合成验收按此前授权临时复用已有模型配置，不复制到正式审计环境。
-- 第4阶段混合搜索、Neo4j和Joern已实现并完成合成服务验收；剩余重点是更完整的框架语义、多语言样例和跨进程任务队列。
+- 第4阶段混合搜索、Neo4j和Joern已实现并完成合成服务验收；JavaScript与TypeScript/TSX已完成第一阶段，并支持静态ES Module命名导入、CommonJS require、命名空间成员、唯一默认导入、TypeScript接口继承、类实现、可选参数调用及保守方法重写候选。剩余重点是泛型约束、更完整的框架语义和分布式协调硬化。
 - Web索引已有SQLite持久化后台任务、状态查询和显式续跑，并使用操作系统文件锁阻止同主机多个API进程同时替换索引。执行器仍不负责跨主机排队，也不会自动续跑中断任务，因此不是分布式队列。
 - 索引任务已记录完整阶段时间线与失败阶段，并支持SQLite跨进程取消信号。取消只在新索引提交前生效；绑定或清理开始后拒绝取消。真实小Demo确认取消批次不可见、旧批次仍然可见。
+- 索引替换后的源码绑定区分当前与历史：新批次写入且OpenSearch、Qdrant、Neo4j、Joern旧数据均清理成功后，旧批次才从当前选择器隐藏；绑定记录和源码快照继续保留给历史审计取证。真实TypeScript Demo连续索引验证当前列表只返回`e25ef270-7108-4931-be4b-52e0f706ca70`，前两个旧批次仍可解析历史绑定。
+- TypeScript接口关系已进入正式索引：两文件合成Demo的批次`a6ccc218-9ecc-40c6-ba4d-5944b9a9f2b6`在真实Neo4j中返回类`IMPLEMENTS`接口及子接口`EXTENDS`父接口；7个块和7个向量全部写入。这是补接口方法符号前的阶段记录。
+- TypeScript接口方法及参数数量已补齐，续跑批次`2d730407-029f-497d-8a51-aa0b8d8218ac`真实返回两个跨接口祖先链的`OVERRIDES`候选。父任务`969deff59af0487aae76a48319ee2bd7`保留Joern OOM失败证据，失败期间旧批次始终可见且未被删除。Joern导入和查询现在保存后关闭项目，重启后工作区所有项目均核对为closed，避免长期服务把所有CPG留在Java堆中。
+- Joern客户端锁等待纳入请求总超时，完整导入序列由可重入锁保护，避免健康/审计请求在导入中途切换活动项目。TypeScript可选参数Demo批次`8d29a504-8e66-489b-b909-46f8bc2b0488`验证一参和二参只连接具体实现；不兼容必填实现不生成错误`find`重写。替换后旧源码绑定仍可解析，当前列表只显示新批次，Joern项目已关闭。
 - 索引工作进程现在原子认领任务，并在长步骤中持续写入心跳和租约；终态释放租约，恢复扫描不受任务列表分页影响。当前不自动抢占过期租约，避免在不清楚外部写入进度时重复执行。
 - Web审计使用独立的操作系统文件锁：第二个API进程不会把第一个进程的运行中任务误标为中断，也不能同时启动另一项审计；取消任务后仍等待已发送模型请求退出再释放锁。多Agent仍在单个任务内部并行，这不等于跨主机调度。
 - 审计任务运行信息已拆到独立SQLite表，支持原子认领、心跳、租约、尝试次数和不覆盖调查JSON的跨进程取消。模型请求退出后才最终释放租约；暂不自动抢占过期审计。
 - 索引与审计提供统一租约状态和显式`recover-stale`：仅在租约过期且进程锁空闲时收口旧任务，绝不自动重跑；用户核对外部状态后再通过`resume`创建子任务。
+- 索引请求现在是SQLite持久化队列：忙碌时排队并显示位置，Worker按创建顺序认领，重启后queued自动恢复执行、running仍需显式续跑。真实容器完成排队、顺序消费和两种重启路径验收。
+- 审计请求也已改为持久化队列：只读预检入库，Worker认领后才创建模型与取证工具；排队取消直接收口，同一时间仍只执行一个审计。真实容器验证两个排队任务由同一Worker顺序消费并各自按预算收口。
+- 队列可观测性已落地：审计详情含queue_position，`GET /api/task-queues`统一返回索引与审计的队列深度；真实API验证通过。
 - Python已接入Tree-sitter、结构化切块、固定快照取证和正式Web索引；纯Python小型Demo的搜索、Neo4j和Joern调用图已实测。混合仓库现按语言建Joern子项目并合并查询，Java/Python调用同时可见；跨语言调用边仍未建立。
 - 新增固定规则的`find_entry_points`，用于定位Spring、JAX-RS、FastAPI/Flask和Django Web入口；它只提供线索，需继续读取源码核实路由和鉴权。
+- Neo4j新增Tree-sitter静态`CALLS`边、向上查询`find_code_callers`和向下查询`find_code_callees`。符号同时保存完整名、短名、所属类型和Java参数个数；明确构造、字段、参数及局部变量接收者与重载可先过滤，并正确处理遮蔽。Python识别直接调用、属性调用和明确构造的接收者。由于尚未做完整类型解析和动态派发，结果必须回到固定源码快照核实。
+- 新增`/api/code-graph/symbols`和`/api/code-graph/callers`供页面或人工排查；请求必须显式绑定仓库、快照和`index_run_id`。Joern故障不再阻塞Web启动，健康探针使用独立短超时；大型分析超时保持独立配置。
 - 反例发现outcome含义歧义：模型支持“控制有效”，后端却按漏洞候选处理。共享明确的漏洞假设状态说明后，真实续跑修正为refuted，原始错误及修订历史均保留。
 - 新增报告提交/部分报告/已登记检查项收口的区分；部分报告可显式续跑为子任务，保留父报告且不沿用旧独立复核。
 - 取证视图租约由10分钟改为2小时，正常结束主动释放；旧租约短于允许的任务时长。取证服务故障单独分类，不自动回退实时索引。历史失败没有保存具体取证异常，不能确定其必然是租约过期。
@@ -76,8 +157,8 @@
 自建运行时已有：基线调查、主调查、反证、独立上下文验证、证据约束报告、取消及子任务续跑。
 取证工具已有：list_chunks、search_text、find_symbol、read_chunk、list_files、read_file、search_source。
 文件正文来自绑定仓库、版本和索引批次的 SQLite 源码快照；不能以当前磁盘代替历史证据。
-取证工具还包括：hybrid_search、find_code_relations、find_code_calls、find_data_paths。它们都绑定同一索引批次和源码快照，不允许模型提交任意Cypher或CPGQL。
-当前完整回归248项通过，1个既有Starlette依赖弃用警告。
+取证工具还包括：hybrid_search、find_code_relations、find_code_callers、find_code_callees、find_code_type_relations、find_dispatch_targets、find_code_calls、find_data_paths。它们都绑定同一索引批次和源码快照，不允许模型提交任意Cypher或CPGQL。
+当前完整回归325项通过，1个既有Starlette依赖弃用警告。
 
 ## 分阶段实施与验收
 

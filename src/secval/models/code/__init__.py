@@ -1,6 +1,7 @@
 """代码处理板块使用的数据模型。"""
 
 from secval.models.code.code_chunk import CodeChunk
+from secval.models.code.code_call import CodeCall
 from secval.models.code.code_repository import CodeRepository
 from secval.models.code.code_snapshot import CodeSnapshot
 from secval.models.code.code_symbol import CodeSymbol
@@ -15,6 +16,7 @@ from secval.models.code.validate_code_chunks import (
 
 __all__ = [
     "CodeChunk",
+    "CodeCall",
     "CodeRepository",
     "CodeSnapshot",
     "CodeSymbol",

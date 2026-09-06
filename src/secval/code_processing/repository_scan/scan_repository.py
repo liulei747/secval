@@ -20,8 +20,15 @@ IGNORED_DIRECTORIES = {
 }
 
 # 扫描器只放行已经有解析器和切块器的文件。
-SOURCE_EXTENSIONS_BY_LANGUAGE = {"java": ".java", "python": ".py"}
-SUPPORTED_FILE_EXTENSIONS = set(SOURCE_EXTENSIONS_BY_LANGUAGE.values())
+# 以扩展名为键，可以让一种语言自然支持多个扩展名，例如 .ts 和 .tsx。
+SOURCE_LANGUAGE_BY_EXTENSION = {
+    ".java": "java",
+    ".js": "javascript",
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+}
+SUPPORTED_FILE_EXTENSIONS = set(SOURCE_LANGUAGE_BY_EXTENSION)
 
 
 def is_supported_source(path: str) -> bool:
@@ -32,10 +39,7 @@ def is_supported_source(path: str) -> bool:
 def language_for_source(path: str) -> str | None:
     """根据已支持的扩展名返回语言，未支持时返回 None。"""
     suffix = Path(path).suffix.lower()
-    for language, extension in SOURCE_EXTENSIONS_BY_LANGUAGE.items():
-        if suffix == extension:
-            return language
-    return None
+    return SOURCE_LANGUAGE_BY_EXTENSION.get(suffix)
 
 
 def scan_repository(root_path: str) -> list[str]:

@@ -1,6 +1,7 @@
 """通过 OpenAI 兼容的 HTTP API 生成代码和查询向量。"""
 
 import json
+import time
 import math
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -54,28 +55,31 @@ class ApiEmbeddingModel:
         self.batch_size = min(batch_size, MAX_INITIAL_API_BATCH_SIZE)
         self.timeout_seconds = timeout_seconds
 
-    def embed_code(self, code_texts: list[str]) -> list[list[float]]:
-        if not code_texts:
-            return []
+    def preflight(self):
+        # 小请求确认服务可达；不发送仓库正文，失败时无需重新采集快照。
+        self._request_vectors(["code indexing connectivity check"], timeout=8, attempts=1)
+
+    def embed_code(self, code_texts: list[str], progress=None) -> list[list[float]]:
         if any(not text.strip() for text in code_texts):
             raise ValueError("代码文本不能为空")
-
-        vectors: list[list[float]] = []
+        vectors = []
         start = 0
-        active_batch_size = self.batch_size
+        batch_size = self.batch_size
         while start < len(code_texts):
-            batch = code_texts[start:start + active_batch_size]
+            if progress is not None:
+                progress(start, len(code_texts))
+            batch = code_texts[start:start + batch_size]
             try:
-                batch_vectors = self._request_vectors(batch)
+                result = self._request_vectors(batch)
             except EmbeddingApiHttpError as error:
-                if error.status_code != 400 or len(batch) == 1:
+                if error.status_code not in (400, 413) or len(batch) == 1:
                     raise
-                # 400“模型异常”常由供应端批量上限触发。把批次减半并
-                # 重试同一段，成功后后续请求继续使用已验证的小批次。
-                active_batch_size = max(1, len(batch) // 2)
+                batch_size = max(1, len(batch) // 2)
                 continue
-            vectors.extend(batch_vectors)
+            vectors.extend(result)
             start += len(batch)
+            if progress is not None:
+                progress(start, len(code_texts))
         return vectors
 
     def embed_query(self, query_text: str) -> list[float]:
@@ -86,7 +90,7 @@ class ApiEmbeddingModel:
         )
         return self._request_vectors([instructed_query])[0]
 
-    def _request_vectors(self, texts: list[str]) -> list[list[float]]:
+    def _request_vectors(self, texts: list[str], *, timeout=None, attempts=3) -> list[list[float]]:
         body = json.dumps(
             {"model": self.model_name, "input": texts, "encoding_format": "float"}
         ).encode("utf-8")
@@ -101,14 +105,25 @@ class ApiEmbeddingModel:
             },
         )
 
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                response_data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:1000]
-            raise EmbeddingApiHttpError(error.code, detail) from error
-        except (URLError, TimeoutError, json.JSONDecodeError) as error:
-            raise ValueError(f"Embedding API 请求失败：{error}") from error
+        last_transient: Exception | None = None
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(1.5 * attempt * attempt)
+            try:
+                with urlopen(request, timeout=self.timeout_seconds if timeout is None else timeout) as response:
+                    response_data = json.loads(response.read().decode("utf-8"))
+                break
+            except HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")[:1000]
+                raise EmbeddingApiHttpError(error.code, detail) from error
+            except (URLError, TimeoutError, ConnectionError, OSError) as error:
+                last_transient = error
+        else:
+            raise ValueError(f"Embedding API 请求失败：{last_transient}")
+        if not isinstance(response_data, dict) or not isinstance(
+            response_data.get("data"), list
+        ):
+            raise ValueError("Embedding API 返回的向量数量与输入数量不一致")
 
         data = response_data.get("data") if isinstance(response_data, dict) else None
         if not isinstance(data, list) or len(data) != len(texts):

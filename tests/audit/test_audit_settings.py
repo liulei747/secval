@@ -67,3 +67,14 @@ def test_timeout_reaches_transport():
 def test_model_rejects_invalid_timeout(value):
     with pytest.raises(ValueError):
         AuditModel("https://example.invalid", "test", "test", timeout_seconds=value)
+
+
+def test_native_tool_protocol_is_explicit(monkeypatch):
+    monkeypatch.setenv("SECVAL_AUDIT_TOOL_PROTOCOL", "native")
+    assert load_audit_settings().tool_protocol == "native"
+
+
+def test_invalid_tool_protocol_is_rejected(monkeypatch):
+    monkeypatch.setenv("SECVAL_AUDIT_TOOL_PROTOCOL", "guess")
+    with pytest.raises(ValueError, match="工具协议"):
+        load_audit_settings()

@@ -49,10 +49,46 @@ def test_source_transaction_rolls_back(tmp_path):
     store = SourceSnapshotStore(str(tmp_path / "test.sqlite3"))
     with pytest.raises(RuntimeError):
         with store._connect() as db:
-            db.execute("INSERT INTO source_snapshots VALUES ('test', 'repo', 'snap')")
+            db.execute("INSERT INTO source_snapshots (id, repository_id, version_label) "
+                       "VALUES ('test', 'repo', 'snap')")
             raise RuntimeError("abort")
     with store._connect() as db:
         assert db.execute("SELECT count(*) FROM source_snapshots").fetchone()[0] == 0
+
+
+def test_old_binding_is_hidden_but_remains_available_for_historical_evidence(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "Test.java").write_text("class Test {}", encoding="utf-8")
+    store = SourceSnapshotStore(str(tmp_path / "source.sqlite3"))
+    old_source = store.capture(root, "repo", "old")
+    new_source = store.capture(root, "repo", "new")
+    store.bind(old_source, "repo", "snap", "run-old")
+    store.bind(new_source, "repo", "snap", "run-new")
+
+    retired = store.retire_old_bindings("repo", "snap", "run-new")
+
+    assert retired == 1
+    assert store.list_bound_runs("repo", "snap") == ["run-new"]
+    # 历史审计仍能按原批次找到当时固定的源码快照。
+    assert store.resolve_binding("repo", "snap", "run-old") == old_source
+
+
+def test_existing_binding_table_is_migrated_with_active_column(tmp_path):
+    database = tmp_path / "old-source.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "CREATE TABLE source_index_bindings ("
+            "index_run_id TEXT PRIMARY KEY, source_snapshot_id TEXT NOT NULL, "
+            "repository_id TEXT NOT NULL, snapshot_id TEXT NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO source_index_bindings VALUES ('run-old', 'source-old', 'repo', 'snap')"
+        )
+
+    store = SourceSnapshotStore(str(database))
+
+    assert store.list_bound_runs("repo", "snap") == ["run-old"]
 
 
 def test_python_source_is_restored_and_available_as_audit_evidence(tmp_path):

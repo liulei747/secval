@@ -109,7 +109,7 @@ class SearchTestRequestHandler(SimpleHTTPRequestHandler):
 
 def read_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="启动 Secval 搜索测试前端")
-    parser.add_argument("--port", type=int, default=8080, help="测试页面端口")
+    parser.add_argument("--port", type=int, default=18080, help="测试页面端口")
     parser.add_argument(
         "--api-address",
         default=DEFAULT_API_ADDRESS,

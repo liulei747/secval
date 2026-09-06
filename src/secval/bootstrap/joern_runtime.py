@@ -16,5 +16,6 @@ def create_optional_joern_client():
         password = Path(password_file).read_text(encoding="utf-8").strip()
     client = JoernClient(url, os.getenv("SECVAL_JOERN_USER", "secval"), password,
                          int(os.getenv("SECVAL_JOERN_TIMEOUT_SECONDS", "600")))
-    client.verify()
+    # 不在Web启动阶段访问Joern。Joern故障时，搜索和上传接口仍应可以启动；
+    # /api/health会用短超时单独报告它不可用。
     return client

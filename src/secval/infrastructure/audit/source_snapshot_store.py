@@ -1,8 +1,10 @@
 """本地源码快照底座；正文由取证工具授权，不推断仓库 ID 与磁盘目录的关系。"""
 
 import hashlib
+import logging
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -28,9 +30,28 @@ class SourceSnapshotStore:
                 );
                 CREATE TABLE IF NOT EXISTS source_index_bindings (
                     index_run_id TEXT PRIMARY KEY, source_snapshot_id TEXT NOT NULL,
-                    repository_id TEXT NOT NULL, snapshot_id TEXT NOT NULL
+                    repository_id TEXT NOT NULL, snapshot_id TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1
                 );
             """)
+            columns = {
+                row[1] for row in db.execute(
+                    "PRAGMA table_info(source_index_bindings)"
+                ).fetchall()
+            }
+            if "active" not in columns:
+                db.execute(
+                    "ALTER TABLE source_index_bindings "
+                    "ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+                )
+            snapshot_columns = {
+                row[1] for row in db.execute(
+                    "PRAGMA table_info(source_snapshots)").fetchall()
+            }
+            if "captured_at" not in snapshot_columns:
+                db.execute(
+                    "ALTER TABLE source_snapshots ADD COLUMN captured_at REAL"
+                )
 
     @contextmanager
     def _connect(self):
@@ -53,14 +74,18 @@ class SourceSnapshotStore:
         snapshot_id = uuid4().hex
         total_bytes = 0
         count = 0
+        captured_at = time.time()
 
         def refuse_scan_error(error):
             # os.walk 默认跳过无法扫描的目录，会把不完整清单误当成功快照。
             raise ValueError("源码目录扫描失败，快照未保存；请检查目录权限或并发变更") from None
 
         with self._connect() as db:
-            db.execute("INSERT INTO source_snapshots VALUES (?, ?, ?)",
-                       (snapshot_id, repository_id, version_label))
+            db.execute(
+                "INSERT INTO source_snapshots (id, repository_id, version_label, captured_at) "
+                "VALUES (?, ?, ?, ?)",
+                (snapshot_id, repository_id, version_label, captured_at),
+            )
             for folder, directories, files in os.walk(root, followlinks=False, onerror=refuse_scan_error):
                 for name in sorted(directories + files):
                     count += 1
@@ -115,16 +140,25 @@ class SourceSnapshotStore:
             ).fetchall()
         with TemporaryDirectory(prefix="secval-index-") as directory:
             root = Path(directory).resolve()
+            skipped: list[str] = []
             for relative, status in rows:
                 if not is_supported_source(relative):
                     continue
                 if status != "captured":
-                    raise ValueError("存在未采集的受支持源文件，不能建立完整代码索引")
+                    # 采集策略主动排除的文件（超大、非UTF-8）与其他排除项同对待：
+                    # 不进入还原目录，也就不会参与扫描与索引；不视为完整性破坏。
+                    skipped.append(relative)
+                    continue
                 destination = (root / relative).resolve()
                 if not destination.is_relative_to(root):
                     raise ValueError("快照路径越界")
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(self.read(snapshot_id, relative).encode("utf-8"))
+            if skipped:
+                logging.getLogger(__name__).warning(
+                    "索引还原跳过 %d 个采集策略排除的受支持源文件，例如：%s",
+                    len(skipped), ", ".join(skipped[:5]),
+                )
             yield str(root)
 
     @contextmanager
@@ -157,14 +191,50 @@ class SourceSnapshotStore:
 
     def bind(self, source_snapshot_id: str, repository_id: str,
              snapshot_id: str, index_run_id: str) -> None:
-        """只在双存储写入及旧批次清理成功之后登记，不覆盖已有批次。"""
+        """只在本批次全部新数据写入成功后登记，不覆盖已有批次。"""
         with self._connect() as db:
             row = db.execute("SELECT repository_id FROM source_snapshots WHERE id=?",
                              (source_snapshot_id,)).fetchone()
             if row is None or row[0] != repository_id:
                 raise ValueError("源码快照不属于当前仓库")
-            db.execute("INSERT INTO source_index_bindings VALUES (?, ?, ?, ?)",
-                       (index_run_id, source_snapshot_id, repository_id, snapshot_id))
+            db.execute(
+                "INSERT INTO source_index_bindings "
+                "(index_run_id, source_snapshot_id, repository_id, snapshot_id, active) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (index_run_id, source_snapshot_id, repository_id, snapshot_id),
+            )
+
+    def delete_unbound_snapshot(self, snapshot_id: str,
+                                older_than_hours: float = 24) -> int:
+        """删除从未绑定任何索引批次且超过时限的快照，返回删除文件数。
+
+    二次校验：绑定关系在任何时刻出现即拒绝，不依赖调用方先查报告。
+    历史绑定的快照（即使已停用）永久保留，供历史审计取证。
+    """
+        cutoff = time.time() - older_than_hours * 3600
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT captured_at FROM source_snapshots WHERE id=?",
+                (snapshot_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("快照不存在")
+            captured_at = row[0]
+            if not isinstance(captured_at, (int, float)) or captured_at <= 0:
+                raise ValueError("旧快照缺少采集时间，无法确认安全删除；请人工核对")
+            if captured_at >= cutoff:
+                raise ValueError("快照未超过保留时限")
+            bound = db.execute(
+                "SELECT COUNT(*) FROM source_index_bindings "
+                "WHERE source_snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()[0]
+            if bound:
+                raise ValueError("快照已绑定索引批次，不允许删除")
+            cursor = db.execute("DELETE FROM source_files WHERE snapshot_id=?",
+                                (snapshot_id,))
+            db.execute("DELETE FROM source_snapshots WHERE id=?", (snapshot_id,))
+            return cursor.rowcount
 
     def resolve_binding(self, repository_id: str, snapshot_id: str,
                         index_run_id: str) -> str | None:
@@ -177,14 +247,60 @@ class SourceSnapshotStore:
         return row[0] if row else None
 
     def list_bound_runs(self, repository_id: str, snapshot_id: str) -> list[str]:
-        """列出旧分析批次，只用于新批次完成后的延迟清理。"""
+        """列出仍作为当前结果使用的分析批次。"""
         with self._connect() as db:
             rows = db.execute(
                 "SELECT index_run_id FROM source_index_bindings "
-                "WHERE repository_id=? AND snapshot_id=? ORDER BY index_run_id",
+                "WHERE repository_id=? AND snapshot_id=? AND active=1 "
+                "ORDER BY index_run_id",
                 (repository_id, snapshot_id),
             ).fetchall()
         return [row[0] for row in rows]
+
+    def retire_old_bindings(self, repository_id: str, snapshot_id: str,
+                            current_index_run_id: str) -> int:
+        """新批次完成清理后停用旧批次，但保留历史源码取证关系。"""
+
+        with self._connect() as db:
+            cursor = db.execute(
+                "UPDATE source_index_bindings SET active=0 "
+                "WHERE repository_id=? AND snapshot_id=? "
+                "AND index_run_id<>? AND active=1",
+                (repository_id, snapshot_id, current_index_run_id),
+            )
+        return cursor.rowcount
+
+    def list_unbound_snapshots(self, older_than_hours: float = 24):
+        """列出保存后从未绑定索引批次的快照，按采集时间分层。
+
+    旧快照没有 captured_at（迁移前保存），单独列为 unknown_age 供人工判断；
+    只报告不删除：清理必须人工确认，不能违反“不提前删除旧索引”原则。
+    """
+        cutoff = time.time() - older_than_hours * 3600
+        with self._connect() as db:
+            columns = {row[1] for row in db.execute(
+                "PRAGMA table_info(source_snapshots)").fetchall()
+            }
+            if "captured_at" not in columns:
+                return []
+            rows = db.execute(
+                "SELECT s.id, s.repository_id, s.version_label, s.captured_at, "
+                "(SELECT COUNT(*) FROM source_files f WHERE f.snapshot_id = s.id) "
+                "FROM source_snapshots s "
+                "WHERE NOT EXISTS (SELECT 1 FROM source_index_bindings b "
+                "WHERE b.source_snapshot_id = s.id) "
+                "ORDER BY s.rowid"
+            ).fetchall()
+        result = []
+        for snapshot_id, repository_id, version_label, captured_at, file_count in rows:
+            known_age = isinstance(captured_at, (int, float)) and captured_at > 0
+            if known_age and captured_at >= cutoff:
+                continue
+            result.append({"snapshot_id": snapshot_id, "repository_id": repository_id,
+                           "version_label": version_label, "file_count": file_count,
+                           "age_known": known_age,
+                           "captured_at": captured_at if known_age else None})
+        return result
 
     @staticmethod
     def _excluded(path: Path, root: Path) -> str | None:
@@ -224,3 +340,25 @@ class SourceSnapshotStore:
         if hashlib.sha256(row[2].encode("utf-8")).hexdigest() != row[1]:
             raise ValueError("快照内容校验失败")
         return row[2]
+
+    def iter_captured_files(self, snapshot_id: str, page_size: int = 100):
+        """按路径序分页产出（path, digest, content），供字面搜索单次遍历。
+
+        行为与 inventory+read 等价但省去每文件二次查询。
+        """
+        with self._connect() as db:
+            offset = 0
+            while True:
+                rows = db.execute(
+                    "SELECT path, status, digest, content FROM source_files "
+                    "WHERE snapshot_id=? AND status='captured' "
+                    "ORDER BY path LIMIT ? OFFSET ?",
+                    (snapshot_id, page_size, offset),
+                ).fetchall()
+                if not rows:
+                    return
+                for row in rows:
+                    yield row[0], row[2], row[3]
+                if len(rows) < page_size:
+                    return
+                offset += page_size

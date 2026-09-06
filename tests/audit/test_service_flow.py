@@ -96,7 +96,11 @@ def test_service_reaches_independent_validation_and_report(tmp_path, review_fail
             assert report["findings"][0]["status"] == "static_supported_needs_review"
         assert report["coverage"]["complete"] is False
         assert report["continuation"]["currentModelCalls"] == (11 if spaced_errors else 8)
-        tools.close.assert_called_once()
+        assert report["graphQuery"] == {"repositoryId": "repo", "snapshotId": "snap",
+                                        "indexRunId": "run",
+                                        "pageHint": "在 /graph 页面选择同一仓库/快照/批次即可人工核对关系线索"}
+        # 预检和执行分别创建并关闭一次取证工具；测试中工厂返回同一Mock。
+        assert tools.close.call_count == 2
         independent_messages = model.next_action.call_args_list[-1].args[0]
         assert len(independent_messages) == 2
         assert "静态证据复核员" in independent_messages[0]["content"]

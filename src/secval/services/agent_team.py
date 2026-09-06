@@ -103,16 +103,51 @@ class AgentTeam:
                 if worker["status"] == "completed" and self.task.get("parent_task_id"):
                     self.update_worker(worker["id"], calls=0, reused_result=True,
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
-                # 已完成结果直接复用，失败或中断者保留独立对话续跑，不复制主上下文。
-                if worker["status"] != "completed":
-                    self.update_worker(worker["id"], status="queued", calls=0, stop_reason=None,
+                elif (worker["status"] == "stopped"
+                      and worker.get("stop_reason") in ("reserved_for_main", "worker_step_limit")):
+                    # 这两类暂停意味着子任务尚无完整结果；立即恢复会消耗新预算，
+                    # 改为保留暂停状态，由主调查在报告前按需收尾（resume_for_validation），
+                    # 避免续跑预算被旧子任务的完整重跑吞掉。
+                    self.update_worker(worker["id"], calls=0,
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
+                elif worker["status"] in ("failed", "stopped"):
+                    # 其他失败/中断者保留独立对话续跑，不复制主上下文。
+                    self.update_worker(worker["id"], status="queued", calls=0, stop_reason=None,
+                                       prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0),
+                                       validation_resume=None)
                     self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
             return
         if self.task.get("independent_baseline", True):
             self.submit("baseline", {"title": "独立基线审计", "question": self.task["objective"], "evidence_ids": []})
         self.submit("architecture", {"title": "独立架构分析", "question":
             "确认实际入口、资产、信任边界和控制，追查资源的实际使用者；仅做架构分析，不冒充安全审阅。", "evidence_ids": []})
+
+    def resume_for_validation(self):
+        """主调查收尾时，把因预算保留暂停的子任务恢复一次，用保留额度完成结果。
+
+        没有这一步，保留额度可能随主调查结束而无人消费，候选会永远停在待复核。
+        每个子任务最多恢复一次；恢复后再次暂停就不会反复重启。
+        """
+
+        with self.lock:
+            task = self.store.get(self.task_id)
+            if task["max_steps"] - task.get("model_calls", 0) < 2:
+                return False
+            workers = task.get("agent_tasks", [])
+            worker = next((row for row in workers
+                           if row["status"] == "stopped"
+                           and row.get("stop_reason") == "reserved_for_main"
+                           and not row.get("validation_resume")), None)
+            if worker is None:
+                return False
+            worker["status"] = "queued"
+            worker["stop_reason"] = None
+            worker["validation_resume"] = True
+            self.store.update(self.task_id, agent_tasks=workers)
+        from secval.services.agent_worker import run_worker
+        self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
+        self.changed.set()
+        return True
 
     def submit(self, role, assignment):
         from secval.services.agent_worker import run_worker
@@ -135,26 +170,45 @@ class AgentTeam:
 
     def request(self, model, messages, agent_id):
         self.check_running()
+        configure_tools = getattr(model, "set_available_read_tools", None)
+        if configure_tools is not None:
+            configure_tools(self.task.get("scope", {}).get("tools", []))
         with self.lock:
             self.check_running()
             task = self.store.get(self.task_id)
             calls = task.get("model_calls", 0)
+            is_review = agent_id.startswith("review:")
             if calls >= task["max_steps"]:
                 raise TeamStopped("step_limit")
-            is_review = agent_id.startswith("review:")
+            if is_review:
+                # 复核可以使用剩余额度，但不能突破用户设置的全队上限。
+                # 检查和占用均在同一把锁内，防止并发复核抢用同一份额度。
+                workers = task.get("agent_tasks", [])
+                worker = next((row for row in workers if row["id"] == agent_id), None)
+                if worker is not None:
+                    worker["calls"] += 1
+                    self.store.update(self.task_id, agent_tasks=workers)
             if agent_id != "main" and not is_review:
-                # 留一部分给主调查核实、汇总和复核，子任务不得抢光预算。
-                reserve = min(8, max(2, task["max_steps"] // 4))
-                if calls >= task["max_steps"] - reserve:
-                    raise TeamStopped("reserved_for_main")
                 workers = task.get("agent_tasks", [])
                 worker = next(row for row in workers if row["id"] == agent_id)
-                if worker["calls"] >= max(2, min(12, task["max_steps"] // 3)):
-                    raise TeamStopped("worker_step_limit")
+                if worker.get("validation_resume"):
+                    # 收尾恢复的子任务消费为验证保留的额度，但主调查保留最后一次报告调用。
+                    if calls >= task["max_steps"] - 1:
+                        raise TeamStopped("reserved_for_main")
+                else:
+                    # 留一部分给主调查核实、汇总和复核，子任务不得抢光预算。
+                    reserve = min(8, max(2, task["max_steps"] // 4))
+                    if calls >= task["max_steps"] - reserve:
+                        raise TeamStopped("reserved_for_main")
+                    if worker["calls"] >= max(2, min(12, task["max_steps"] // 3)):
+                        raise TeamStopped("worker_step_limit")
                 worker["calls"] += 1
                 self.store.update(self.task_id, agent_tasks=workers)
             call_id = calls + 1
             if agent_id == "main":
+                # 主调查在报告阶段不能消费最后一次调用；独立复核至少需要一次请求。
+                if task.get("phase") == "validation" and calls >= task["max_steps"] - 1:
+                    raise TeamStopped("reserved_for_review")
                 self.main_call_id = call_id
             records = task.get("model_requests", [])
             records.append({"call": call_id, "agent_id": agent_id, "status": "started",

@@ -153,6 +153,19 @@ def test_health_endpoint_returns_503_when_qdrant_is_unavailable() -> None:
     assert response.json()["qdrant"] == "unavailable"
 
 
+def test_health_endpoint_uses_short_joern_timeout_and_reports_failure() -> None:
+    runtime = create_runtime()
+    runtime.joern_client = MagicMock()
+    runtime.joern_client.verify.side_effect = TimeoutError("joern did not answer")
+
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 503
+    assert response.json()["joern"] == "unavailable"
+    runtime.joern_client.verify.assert_called_once_with(timeout_seconds=5)
+
+
 def test_background_index_job_can_be_created_and_read(tmp_path, monkeypatch) -> None:
     """后台索引路由应立即返回编号，并能通过同一编号读到结果。"""
     monkeypatch.setenv("SECVAL_INDEX_JOB_DB", str(tmp_path / "jobs.sqlite3"))
@@ -198,6 +211,17 @@ def test_background_index_job_returns_404_for_unknown_id(tmp_path, monkeypatch) 
 
     assert response.status_code == 404
     assert response.json()["detail"] == "索引任务不存在"
+
+
+def test_task_queue_stats_endpoint(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SECVAL_INDEX_JOB_DB", str(tmp_path / "jobs.sqlite3"))
+
+    with TestClient(create_search_app(create_runtime())) as client:
+        response = client.get("/api/task-queues")
+
+    assert response.status_code == 200
+    assert response.json() == {"index": {"queued": 0, "running": 0},
+                               "audit": {"queued": 0, "running": 0}}
 
     with TestClient(create_search_app(create_runtime())) as client:
         response = client.post("/api/repositories/index-jobs/not-found/recover-stale")
@@ -266,6 +290,161 @@ def test_search_endpoint_rejects_invalid_top_k() -> None:
 
     assert response.status_code == 422
     runtime.search_service.search.assert_not_called()
+
+
+def test_code_graph_callers_endpoint_is_bound_to_an_index_run() -> None:
+    runtime = create_runtime()
+    runtime.code_graph_store = MagicMock()
+    runtime.code_graph_store.find_callers.return_value = [
+        {
+            "caller": "demo.Controller.submit()",
+            "callee": "demo.Service.run()",
+            "path": "src/Controller.java",
+            "line": 8,
+        }
+    ]
+    request_body = {
+        "repository_id": "repository-1",
+        "snapshot_id": "snapshot-1",
+        "index_run_id": "run-1",
+        "symbol": "run",
+        "limit": 5,
+    }
+
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.post("/api/code-graph/callers", json=request_body)
+
+    assert response.status_code == 200
+    assert response.json()["index_run_id"] == "run-1"
+    assert response.json()["rows"][0]["caller"] == "demo.Controller.submit()"
+    runtime.code_graph_store.find_callers.assert_called_once_with(
+        "repository-1", "snapshot-1", "run-1", "run", 5
+    )
+
+
+def test_code_graph_symbols_endpoint_returns_declarations() -> None:
+    runtime = create_runtime()
+    runtime.code_graph_store = MagicMock()
+    runtime.code_graph_store.find_symbol.return_value = [
+        {"name": "demo.Service.run()", "path": "src/Service.java", "start_line": 3}
+    ]
+
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.post(
+            "/api/code-graph/symbols",
+            json={
+                "repository_id": "repository-1",
+                "snapshot_id": "snapshot-1",
+                "index_run_id": "run-1",
+                "symbol": "Service",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["name"] == "demo.Service.run()"
+
+
+def test_code_graph_callees_endpoint_returns_targets() -> None:
+    runtime = create_runtime()
+    runtime.code_graph_store = MagicMock()
+    runtime.code_graph_store.find_callees.return_value = [
+        {"caller": "demo.Controller.submit()", "callee": "demo.Service.run()",
+         "caller_path": "src/Controller.java", "path": "src/Service.java", "line": 3}
+    ]
+
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.post(
+            "/api/code-graph/callees",
+            json={"repository_id": "repository-1", "snapshot_id": "snapshot-1",
+                  "index_run_id": "run-1", "symbol": "submit", "limit": 5},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["callee"] == "demo.Service.run()"
+    runtime.code_graph_store.find_callees.assert_called_once_with(
+        "repository-1", "snapshot-1", "run-1", "submit", 5
+    )
+
+
+def test_code_graph_type_relations_endpoint_returns_rows() -> None:
+    runtime = create_runtime()
+    runtime.code_graph_store = MagicMock()
+    runtime.code_graph_store.find_type_relations.return_value = [
+        {"symbol": "demo.Service", "relation": "EXTENDS", "parent": "demo.Base",
+         "path": "src/Service.java", "line": 4, "overrides": []}
+    ]
+
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.post(
+            "/api/code-graph/type-relations",
+            json={"repository_id": "repository-1", "snapshot_id": "snapshot-1",
+                  "index_run_id": "run-1", "symbol": "Service", "limit": 5},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["parent"] == "demo.Base"
+    runtime.code_graph_store.find_type_relations.assert_called_once_with(
+        "repository-1", "snapshot-1", "run-1", "Service", 5
+    )
+
+
+def test_code_graph_dispatch_targets_endpoint_returns_candidates() -> None:
+    runtime = create_runtime()
+    runtime.code_graph_store = MagicMock()
+    runtime.code_graph_store.find_dispatch_targets.return_value = [
+        {"base_method": "demo.Greeter.greet()",
+         "candidate_kind": "dispatch_candidates",
+         "implementations": ["demo.AService.greet()"]}
+    ]
+
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.post(
+            "/api/code-graph/dispatch-targets",
+            json={"repository_id": "repository-1", "snapshot_id": "snapshot-1",
+                  "index_run_id": "run-1", "symbol": "greet", "limit": 5},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["candidate_kind"] == "dispatch_candidates"
+    runtime.code_graph_store.find_dispatch_targets.assert_called_once_with(
+        "repository-1", "snapshot-1", "run-1", "greet", 5, receiver_type=None
+    )
+
+
+def test_graph_page_lists_index_runs_for_selected_repository(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SECVAL_INDEX_JOB_DB", str(tmp_path / "jobs.sqlite3"))
+    runtime = create_runtime()
+
+    with TestClient(create_search_app(runtime)) as client:
+        page = client.get("/graph")
+        assert page.status_code == 200
+        assert "代码关系查询" in page.text
+
+        runs = client.get(
+            "/api/repositories/index-runs",
+            params={"repository_id": "repository-1", "snapshot_id": "snapshot-1"},
+        )
+
+    assert runs.status_code == 200
+    assert runs.json() == []
+
+
+def test_code_graph_endpoint_explains_when_neo4j_is_disabled() -> None:
+    runtime = create_runtime()
+
+    with TestClient(create_search_app(runtime)) as client:
+        response = client.post(
+            "/api/code-graph/callers",
+            json={
+                "repository_id": "repository-1",
+                "snapshot_id": "snapshot-1",
+                "index_run_id": "run-1",
+                "symbol": "run",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "当前未启用Neo4j代码关系服务"
 
 
 def test_upload_repository_saves_relative_file_paths(

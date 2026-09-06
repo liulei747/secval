@@ -54,6 +54,11 @@ def index_repository(
     if snapshot.repository_id != repository.repository_id:
         raise ValueError("代码版本不属于当前仓库")
 
+    preflight = getattr(embedding_model, "preflight", None)
+    if callable(preflight):
+        _report_progress(progress, "检查向量服务连接")
+        preflight()
+
     _report_progress(progress, "准备搜索存储")
     index_created = create_code_index(open_search_connection)
     vector_collection_created = create_code_vector_collection(qdrant_client)
@@ -95,7 +100,12 @@ def index_repository(
     index_run_id = str(uuid4())
     _report_progress(progress, "生成代码向量")
     embedding_texts = _create_embedding_texts(process_result.chunks)
-    vectors = embedding_model.embed_code(embedding_texts)
+    if progress is not None:
+        def embedding_progress(done, total):
+            _report_progress(progress, f"生成代码向量 {done}/{total}")
+    else:
+        embedding_progress = None
+    vectors = embedding_model.embed_code(embedding_texts, progress=embedding_progress)
 
     try:
         _report_progress(progress, "写入OpenSearch")
@@ -167,11 +177,13 @@ def index_repository(
         snapshot_id=snapshot.snapshot_id,
         current_index_run_id=index_run_id,
     )
+    old_optional_indexes_cleaned = True
     if graph_store is not None:
         try:
             graph_store.delete_old_runs(repository.repository_id, snapshot.snapshot_id, index_run_id)
         except Exception:
             # 新批次已经完整可用；旧图残留不应把成功导入报告成失败。
+            old_optional_indexes_cleaned = False
             logger.exception("清理 Neo4j 旧索引批次失败：%s", index_run_id)
 
     if joern_client is not None:
@@ -182,7 +194,14 @@ def index_repository(
                 joern_client.delete_project(old_run)
             except Exception:
                 # 新项目及源码绑定已经完成；旧项目残留只记录，不回滚新结果。
+                old_optional_indexes_cleaned = False
                 logger.exception("清理 Joern 旧索引批次失败：%s", old_run)
+
+    if source_store is not None and old_optional_indexes_cleaned:
+        # 历史绑定仍保留给既有审计读取固定源码，只是不再作为当前可选批次展示。
+        source_store.retire_old_bindings(
+            repository.repository_id, snapshot.snapshot_id, index_run_id
+        )
 
     return RepositoryIndexResult(
         process_result=process_result,

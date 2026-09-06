@@ -2,8 +2,8 @@
 
 ## 架构与后续实施
 
-- [审计架构与实施基线](docs/audit-architecture-plan.md)：参考Codex Security的方法、目标流程、现状、阶段验收与决策记录。
-- [当前只读审计原型](docs/audit-agent.md)：已实现接口、配置和限制。
+- [只读审计原型：接口与限制](docs/audit-agent.md)：当前审计能力、Web页面、预算/续跑用法与报告语义。
+- [审计实施状态与验收记录](docs/audit-implementation-status.md)：多Agent协作、真实验收结果与未完成项。
 
 后续审计功能开发先核对上述文档。目标为独立Web审计应用，当前原型不等于完整审计系统。
 
@@ -54,6 +54,15 @@ bootstrap → infrastructure
 
 当前已接入 Neo4j 声明关系、Joern 调用/数据流路径和多 Agent 审计。
 MCP 按当前范围暂不实现。图与路径结果只是定位线索，必须回到固定源码快照核实后才能作为审计证据。
+
+## 只读安全审计
+
+浏览器打开 <http://127.0.0.1:8000/audit> 发起协作审计：主 Agent 与子 Agent 并行读取
+固定源码快照，漏洞候选需经独立上下文复核并按详情指纹提升为正式发现。支持调用/时长
+预算、取消、检查点续跑（budget_exhausted 或 interrupted 后可显式 /resume）和报告收口
+状态展示。接口与报告语义详见 [docs/audit-agent.md](docs/audit-agent.md)；当前进度与
+真实验收记录见 [docs/audit-implementation-status.md](docs/audit-implementation-status.md)。
+
 
 ## 本地服务
 
@@ -115,7 +124,10 @@ Invoke-RestMethod `
     -Body $body
 ```
 
-后台接口立即返回任务编号，使用
+后台接口立即返回任务编号，任务先进入SQLite队列；所有API进程共用队列，但同一时间
+只有一个进程持锁执行。已有任务运行时再提交不会报错，而是返回排队位置
+`queue_position`。服务重启后排队任务会被新服务自动继续执行；已经运行的running任务
+标为`interrupted`，需要显式`/resume`。使用
 `GET /api/repositories/index-jobs/{job_id}` 查看状态。服务重启时，未完成任务会标记为
 `interrupted`；需要用户明确调用 `POST /api/repositories/index-jobs/{job_id}/resume`
 创建续跑子任务。同步 `/api/repositories/index` 仅为兼容旧客户端保留。

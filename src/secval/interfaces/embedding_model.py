@@ -1,6 +1,7 @@
 """Embedding 模型共同接口。"""
 
 from typing import Protocol
+from typing import Callable
 
 
 class EmbeddingModel(Protocol):
@@ -10,6 +11,10 @@ class EmbeddingModel(Protocol):
     model_name: str
     expected_dimension: int
 
-    def embed_code(self, code_texts: list[str]) -> list[list[float]]: ...
+    def embed_code(
+        self,
+        code_texts: list[str],
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[list[float]]: ...
 
     def embed_query(self, query_text: str) -> list[float]: ...

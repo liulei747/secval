@@ -126,10 +126,18 @@ class EvidenceTools:
             if self.search_service is not None:
                 scope["tools"].append("hybrid_search")
             if self.graph_store is not None:
-                scope["tools"].append("find_code_relations")
+                scope["tools"].extend([
+                    "find_code_relations",
+                    "find_code_callers",
+                    "find_code_callees",
+                    "find_code_type_relations",
+                    "find_dispatch_targets",
+                ])
                 scope["limitations"] = [item for item in scope["limitations"]
                                         if "调用图" not in item]
-                scope["limitations"].append("Neo4j当前只保存文件与符号的声明关系，不代表调用链")
+                scope["limitations"].append(
+                    "Neo4j调用关系来自Tree-sitter；可确认时按接收者类型和参数个数缩小范围，未知类型和动态分派仍可能产生多条候选边"
+                )
             if self.joern_client is not None:
                 scope["tools"].extend(["find_code_calls", "find_data_paths"])
                 scope["limitations"].append("Joern调用和数据流结果是静态分析线索，可能存在漏报或误报")
@@ -152,6 +160,74 @@ class EvidenceTools:
             return {"rows": rows, "view_id": bound["view_id"],
                     "index_run_id": bound["index_run_id"],
                     "relation_note": "只表示文件DECLARES符号；是定位线索，必须read_file或read_chunk后才能成为证据"}
+        if name == "find_code_callers":
+            from secval.models.audit_contracts import ToolAction
+            ToolAction.parse({"tool": name, "arguments": arguments})
+            if self.graph_store is None:
+                raise ValueError("当前未配置代码关系存储")
+            if not hasattr(self.graph_store, "find_callers"):
+                raise ValueError("当前关系存储不支持调用方向查询")
+            bound = self._file_call("list_files", {})
+            rows = self.graph_store.find_callers(
+                self.repository_id, self.snapshot_id, bound["index_run_id"],
+                arguments["symbol"], arguments.get("limit", 20),
+            )
+            rows = [row for row in rows if in_scope(row.get("path", ""), self.scope_paths)]
+            return {"rows": rows, "view_id": bound["view_id"],
+                    "index_run_id": bound["index_run_id"],
+                    "relation_note": "CALLS静态引用由Tree-sitter生成；可确认时按接收者类型和参数个数缩小候选，仍须read_file核实"}
+        if name == "find_code_callees":
+            from secval.models.audit_contracts import ToolAction
+            ToolAction.parse({"tool": name, "arguments": arguments})
+            if self.graph_store is None:
+                raise ValueError("当前未配置代码关系存储")
+            if not hasattr(self.graph_store, "find_callees"):
+                raise ValueError("当前关系存储不支持被调用目标查询")
+            bound = self._file_call("list_files", {})
+            rows = self.graph_store.find_callees(
+                self.repository_id, self.snapshot_id, bound["index_run_id"],
+                arguments["symbol"], arguments.get("limit", 20),
+            )
+            rows = [
+                row for row in rows
+                if in_scope(row.get("caller_path", ""), self.scope_paths)
+                and in_scope(row.get("path", ""), self.scope_paths)
+            ]
+            return {"rows": rows, "view_id": bound["view_id"],
+                    "index_run_id": bound["index_run_id"],
+                    "relation_note": "CALLS静态引用由Tree-sitter生成；可确认时按接收者类型和参数个数缩小候选，仍须read_file核实"}
+        if name == "find_dispatch_targets":
+            from secval.models.audit_contracts import ToolAction
+            ToolAction.parse({"tool": name, "arguments": arguments})
+            if self.graph_store is None:
+                raise ValueError("当前未配置代码关系存储")
+            if not hasattr(self.graph_store, "find_dispatch_targets"):
+                raise ValueError("当前关系存储不支持动态分派候选查询")
+            bound = self._file_call("list_files", {})
+            rows = self.graph_store.find_dispatch_targets(
+                self.repository_id, self.snapshot_id, bound["index_run_id"],
+                arguments["symbol"], arguments.get("limit", 20),
+                receiver_type=arguments.get("receiver_type"),
+            )
+            return {"rows": rows, "view_id": bound["view_id"],
+                    "index_run_id": bound["index_run_id"],
+                    "relation_note": "动态分派候选来自仓库内OVERRIDES边；没有候选不代表没有外部实现，必须read_file核实"}
+        if name == "find_code_type_relations":
+            from secval.models.audit_contracts import ToolAction
+            ToolAction.parse({"tool": name, "arguments": arguments})
+            if self.graph_store is None:
+                raise ValueError("当前未配置代码关系存储")
+            if not hasattr(self.graph_store, "find_type_relations"):
+                raise ValueError("当前关系存储不支持类型关系查询")
+            bound = self._file_call("list_files", {})
+            rows = self.graph_store.find_type_relations(
+                self.repository_id, self.snapshot_id, bound["index_run_id"],
+                arguments["symbol"], arguments.get("limit", 20),
+            )
+            rows = [row for row in rows if in_scope(row.get("path", ""), self.scope_paths)]
+            return {"rows": rows, "view_id": bound["view_id"],
+                    "index_run_id": bound["index_run_id"],
+                    "relation_note": "EXTENDS/IMPLEMENTS/OVERRIDES来自Tree-sitter与仓库内类型解析；未解析的外部类型不生成边，必须read_file核实语义"}
         if name == "find_code_calls":
             from secval.models.audit_contracts import ToolAction
             ToolAction.parse({"tool": name, "arguments": arguments})
@@ -442,28 +518,25 @@ class EvidenceTools:
         text = arguments["text"]
         hits = []
         matched = 0
-        for page in range(0, 10000, 100):
-            rows = self.source_store.inventory(source_id, page)
-            for row in rows:
-                path = row["path"]
-                if (row["status"] != "captured" or not in_scope(path, self.scope_paths)
-                        or (not is_supported_source(path) and path not in self.approved_config_paths)):
-                    continue
-                content = self.source_store.read(source_id, path)
-                position = content.find(text)
-                if position < 0:
-                    continue
-                matched += 1
-                if matched <= offset:
-                    continue
-                hits.append({"path": path, "char_offset": position,
-                             "start_line": 1 + content[:position].count("\n"),
-                             "end_line": 1 + content[:position].count("\n") + text.removesuffix("\n").count("\n"),
-                             "content_sha256": row["digest"]})
-                if len(hits) == 21:
-                    return {"rows": hits[:20], "next_offset": offset + 20,
-                            "search_note": "字面且区分大小写；每文件首个命中；必须read_file核实后才能引用"}
-            if len(rows) < 100:
-                break
+        for path, digest, content in self.source_store.iter_captured_files(source_id):
+            if (not in_scope(path, self.scope_paths)
+                or (not is_supported_source(path) and path not in self.approved_config_paths)):
+                continue
+            position = content.find(text)
+            if position < 0:
+                continue
+            # 与 read() 相同的完整性校验：内容与快照摘要不符时拒绝搜索。
+            if hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("快照内容校验失败：" + path)
+            matched += 1
+            if matched <= offset:
+                continue
+            hits.append({"path": path, "char_offset": position,
+                         "start_line": 1 + content[:position].count("\n"),
+                         "end_line": 1 + content[:position].count("\n") + text.removesuffix("\n").count("\n"),
+                         "content_sha256": digest})
+            if len(hits) == 21:
+                return {"rows": hits[:20], "next_offset": offset + 20,
+                        "search_note": "字面且区分大小写；每文件首个命中；必须read_file核实后才能引用"}
         return {"rows": hits, "next_offset": None,
                 "search_note": "字面且区分大小写；每文件首个命中；必须read_file核实后才能引用"}

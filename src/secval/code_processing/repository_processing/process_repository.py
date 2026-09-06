@@ -1,9 +1,19 @@
 """扫描并处理一个代码仓库。"""
 
 from secval.code_processing.code_splitting.java import split_java_declarations
+from secval.code_processing.code_splitting.javascript import split_javascript_declarations
 from secval.code_processing.code_splitting.python import split_python_declarations
+from secval.code_processing.code_splitting.typescript import split_typescript_declarations
 from secval.code_processing.repository_scan import scan_repository
-from secval.code_processing.source_parsing import parse_java, parse_python
+from secval.code_processing.repository_processing.resolve_cross_file_calls import (
+    resolve_cross_file_calls,
+)
+from secval.code_processing.source_parsing import (
+    parse_java,
+    parse_javascript,
+    parse_python,
+    parse_typescript,
+)
 from secval.code_processing.source_reading import read_source_file
 from secval.code_processing.source_reading.read_source_file import (
     DEFAULT_MAX_FILE_SIZE,
@@ -51,9 +61,15 @@ def process_repository(
             if source_file.language == "java":
                 syntax_tree = parse_java(source_file)
                 file_chunks = split_java_declarations(source_file, syntax_tree)
+            elif source_file.language == "javascript":
+                syntax_tree = parse_javascript(source_file)
+                file_chunks = split_javascript_declarations(source_file, syntax_tree)
             elif source_file.language == "python":
                 syntax_tree = parse_python(source_file)
                 file_chunks = split_python_declarations(source_file, syntax_tree)
+            elif source_file.language == "typescript":
+                syntax_tree = parse_typescript(source_file)
+                file_chunks = split_typescript_declarations(source_file, syntax_tree)
             else:
                 raise ValueError(f"没有可用的代码处理器：{source_file.language}")
             chunks.extend(file_chunks)
@@ -66,6 +82,9 @@ def process_repository(
                     message=str(error),
                 )
             )
+
+    # 单文件错误已经隔离；这里只用成功文件的元数据补全唯一可确认的跨文件返回值。
+    resolve_cross_file_calls(chunks)
 
     return RepositoryProcessResult(
         total_files=len(relative_paths),

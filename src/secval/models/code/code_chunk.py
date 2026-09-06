@@ -9,6 +9,7 @@ from secval.models.identifiers import (
     SnapshotId,
     SymbolId,
 )
+from secval.models.code.code_call import CodeCall
 
 
 @dataclass
@@ -33,6 +34,23 @@ class CodeChunk:
     symbol_name: str | None = None
     symbol_ids: list[SymbolId] = field(default_factory=list)
     symbol_names: list[str] = field(default_factory=list)
+    called_symbol_names: list[str] = field(default_factory=list)
+    code_calls: list[CodeCall] = field(default_factory=list)
+    parameter_count: int | None = None
+    required_parameter_count: int | None = None
+    accepts_extra_arguments: bool = False
+    positional_parameter_count: int | None = None
+    keyword_parameter_names: list[str] = field(default_factory=list)
+    required_keyword_only_parameters: list[str] = field(default_factory=list)
+    accepts_extra_keywords: bool = False
+    has_default_parameters: bool = False
+    declared_return_type: str | None = None
+    declared_return_full_name: str | None = None
+    extends_types: list[str] = field(default_factory=list)
+    implements_types: list[str] = field(default_factory=list)
+    extends_full_names: list[str] = field(default_factory=list)
+    supertype_full_names: list[str] = field(default_factory=list)
+    ancestor_type_full_names: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """创建对象时检查代码块的基本内容和行号。"""
@@ -90,4 +108,22 @@ class CodeChunk:
 
         if self.symbol_ids and len(self.symbol_ids) != len(self.symbol_names):
             raise ValueError("代码块符号 ID 和名称数量必须一致")
+
+        if self.code_calls and not self.called_symbol_names:
+            self.called_symbol_names = sorted({call.name for call in self.code_calls})
+
+        if self.declared_return_type is not None and not self.declared_return_type.strip():
+            raise ValueError("方法返回类型不能是空字符串")
+
+        if self.declared_return_full_name is not None and not self.declared_return_full_name.strip():
+            raise ValueError("方法返回完整类型不能是空字符串")
+
+        if any(not value.strip() for value in self.extends_types + self.implements_types):
+            raise ValueError("父类型名称不能是空字符串")
+
+        if any(
+            not value.strip()
+            for value in self.supertype_full_names + self.ancestor_type_full_names
+        ):
+            raise ValueError("解析后的父类型完整名不能是空字符串")
 

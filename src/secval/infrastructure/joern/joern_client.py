@@ -3,7 +3,8 @@
 import base64
 import json
 import re
-from threading import Lock
+from threading import RLock
+from time import monotonic
 from urllib.request import Request, urlopen
 
 
@@ -13,24 +14,36 @@ class JoernClient:
         self.username = username
         self.password = password
         self.timeout_seconds = timeout_seconds
-        self.lock = Lock()
+        # 一次导入包含多条Joern语句，需要外层连续持锁；RLock允许内部_query重入。
+        self.lock = RLock()
 
-    def verify(self):
-        output = self._query('"SECVAL:1"')
+    def verify(self, timeout_seconds=10):
+        """用短请求检查服务；健康探针不能沿用大型分析的长超时。"""
+
+        output = self._query('"SECVAL:1"', timeout_seconds=timeout_seconds)
         if "SECVAL:1" not in self._plain_output(output):
             raise RuntimeError("Joern健康检查没有返回预期标记")
 
     def import_code(self, directory, index_run_id, language=None):
         project = self._project_name(index_run_id, language)
         safe_directory = self._scala_text(directory)
-        self._query(f'importCode(inputPath={safe_directory}, projectName="{project}")')
-        checked = self._query(f'open("{project}"); "SECVAL:" + cpg.metaData.size')
-        if "SECVAL:1" not in self._plain_output(checked):
-            raise RuntimeError("Joern项目导入后无法读取")
-        self._query("run.ossdataflow")
-        # 数据流覆盖层是导入后新生成的内容，必须显式保存。
-        # 否则 Joern 容器重建后只能找回基础 CPG，找不回数据流边。
-        self._query("save")
+        if not self.lock.acquire(timeout=self.timeout_seconds):
+            raise RuntimeError("Joern正在执行其他分析，本次等待已超时")
+        try:
+            # Joern只有一个全局活动项目，这五步之间不能插入其他open/query操作。
+            self._query(f'importCode(inputPath={safe_directory}, projectName="{project}")')
+            checked = self._query(f'open("{project}"); "SECVAL:" + cpg.metaData.size')
+            if "SECVAL:1" not in self._plain_output(checked):
+                raise RuntimeError("Joern项目导入后无法读取")
+            self._query("run.ossdataflow")
+            # 数据流覆盖层是导入后新生成的内容，必须显式保存。
+            # 否则 Joern 容器重建后只能找回基础 CPG，找不回数据流边。
+            self._query("save")
+            # 项目已经保存到工作区磁盘，立即关闭可释放内存中的CPG。
+            # 后续查询会按项目名重新打开，不能让长期服务越索引占用越多堆内存。
+            self._query(f'close("{project}")')
+        finally:
+            self.lock.release()
         return project
 
     def delete_project(self, index_run_id):
@@ -49,10 +62,11 @@ class JoernClient:
                 break
             query = (
                 f'open("{project}"); '
-                f'cpg.call.nameExact("{method_name}").take({remaining}).map(call => '
+                f'val secvalResult = cpg.call.nameExact("{method_name}").take({remaining}).map(call => '
                 'java.util.Base64.getEncoder.encodeToString('
                 's"${call.name}\\t${call.location.filename}\\t${call.lineNumber.getOrElse(0)}"'
-                '.getBytes(java.nio.charset.StandardCharsets.UTF_8))).l.mkString("SECVAL:", ",", "")'
+                '.getBytes(java.nio.charset.StandardCharsets.UTF_8))).l.mkString("SECVAL:", ",", ""); '
+                f'close("{project}"); secvalResult'
             )
             for encoded in self._marked_values(self._query(query), "Joern调用查询"):
                 try:
@@ -79,11 +93,12 @@ class JoernClient:
                 f'open("{project}"); '
                 f'def secvalSource = cpg.method.nameExact("{source_method}").parameter; '
                 f'def secvalSink = cpg.call.nameExact("{sink_method}").argument; '
-                f'secvalSink.reachableByFlows(secvalSource).take({remaining}).map(flow => '
+                f'val secvalResult = secvalSink.reachableByFlows(secvalSource).take({remaining}).map(flow => '
                 'java.util.Base64.getEncoder.encodeToString(flow.elements.map(element => '
                 's"${element.label}\\t${element.location.filename}\\t${element.lineNumber.getOrElse(0)}"'
                 ').mkString("\\n").getBytes(java.nio.charset.StandardCharsets.UTF_8)))'
-                '.l.mkString("SECVAL:", ",", "")'
+                '.l.mkString("SECVAL:", ",", ""); '
+                f'close("{project}"); secvalResult'
             )
             for encoded in self._marked_values(self._query(query), "Joern数据流查询"):
                 try:
@@ -134,7 +149,7 @@ class JoernClient:
     def _plain_output(output):
         return re.sub(r"\x1b\[[0-9;]*m", "", output)
 
-    def _query(self, query):
+    def _query(self, query, timeout_seconds=None):
         body = json.dumps({"query": query}).encode("utf-8")
         request = Request(self.url + "/query-sync", data=body,
                           headers={"Content-Type": "application/json"})
@@ -142,9 +157,20 @@ class JoernClient:
             token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
             request.add_header("Authorization", "Basic " + token)
         # Joern的活动项目属于服务器全局状态，所以切换项目和查询必须串在同一把锁内。
-        with self.lock:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+        request_timeout = self.timeout_seconds
+        if timeout_seconds is not None:
+            request_timeout = timeout_seconds
+        wait_started = monotonic()
+        if not self.lock.acquire(timeout=request_timeout):
+            raise RuntimeError("Joern正在执行其他分析，本次等待已超时")
+        try:
+            remaining_seconds = request_timeout - (monotonic() - wait_started)
+            if remaining_seconds <= 0:
+                raise RuntimeError("Joern正在执行其他分析，本次等待已超时")
+            with urlopen(request, timeout=remaining_seconds) as response:
                 result = json.load(response)
+        finally:
+            self.lock.release()
         stderr = result.get("stderr", "")
         if stderr:
             raise RuntimeError("Joern查询失败：" + stderr[-1000:])
@@ -154,7 +180,9 @@ class JoernClient:
     def _project_name(index_run_id, language=None):
         if not isinstance(index_run_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", index_run_id):
             raise ValueError("索引批次ID不能用于Joern项目名")
-        if language is not None and language not in {"java", "python"}:
+        if language is not None and language not in {
+            "java", "javascript", "python", "typescript"
+        }:
             raise ValueError("Joern暂不支持此语言项目")
         suffix = "-" + language if language else ""
         return "secval-" + index_run_id + suffix

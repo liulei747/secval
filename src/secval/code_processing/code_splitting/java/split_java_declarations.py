@@ -8,7 +8,11 @@ from secval.code_processing.source_parsing.java.extract_java_symbols import (
     JavaSymbolNode,
     extract_java_symbol_nodes,
 )
-from secval.models.code import CodeChunk, SourceFile
+from secval.code_processing.source_parsing.java.extract_java_calls import (
+    extract_java_calls,
+    read_simple_java_type,
+)
+from secval.models.code import CodeCall, CodeChunk, SourceFile
 from secval.models.identifiers import create_chunk_id
 
 
@@ -24,6 +28,7 @@ def split_java_declarations(
         )
 
     symbol_nodes = extract_java_symbol_nodes(source_file, syntax_tree)
+    call_references = extract_java_calls(source_file, syntax_tree)
     grouped_nodes = _group_shared_declarations(symbol_nodes)
     source_bytes = source_file.content.encode("utf-8")
     chunks: list[CodeChunk] = []
@@ -81,10 +86,95 @@ def split_java_declarations(
                 symbol_name=symbol_name,
                 symbol_ids=symbol_ids,
                 symbol_names=symbol_names,
+                called_symbol_names=sorted({
+                    reference.callee_name for reference in call_references
+                    if reference.caller_full_name in symbol_names
+                }),
+                code_calls=[
+                    CodeCall(
+                        name=reference.callee_name,
+                        line=reference.line,
+                        receiver_type=reference.receiver_type,
+                        argument_count=reference.argument_count,
+                        receiver_method_owner_type=reference.receiver_method_owner_type,
+                        receiver_method_name=reference.receiver_method_name,
+                        receiver_method_argument_count=reference.receiver_method_argument_count,
+                    )
+                    for reference in call_references
+                    if reference.caller_full_name in symbol_names
+                ],
+                declared_return_type=_declared_return_type(first_node, source_bytes),
+                extends_types=_extends_types(first_node.node, source_bytes),
+                implements_types=_implements_types(first_node.node, source_bytes),
             )
         )
 
     return chunks
+
+
+def _declared_return_type(symbol_node: JavaSymbolNode, source_bytes: bytes) -> str | None:
+    """方法块保存明确返回类型，供仓库汇总阶段解析跨文件调用链。"""
+
+    if symbol_node.node.type != "method_declaration":
+        return None
+    return_node = symbol_node.node.child_by_field_name("type")
+    if return_node is None:
+        return None
+    return read_simple_java_type(
+        source_bytes[return_node.start_byte:return_node.end_byte].decode("utf-8")
+    )
+
+
+def _extends_types(node, source_bytes: bytes) -> list[str]:
+    """类继承的父类和接口继承的父接口使用同一原始类型列表。"""
+
+    if node.type == "class_declaration":
+        superclass_node = node.child_by_field_name("superclass")
+        if superclass_node is None:
+            return []
+        # superclass包装节点没有type字段，真实类型是它唯一的子节点。
+        type_nodes = [
+            child for child in superclass_node.named_children
+            if child.type != "extends"
+        ]
+        type_text = _type_text(type_nodes[0], source_bytes) if type_nodes else None
+        return [type_text] if type_text else []
+    if node.type == "interface_declaration":
+        # 部分tree_sitter-java版本的extends_interfaces未标记为field；
+        # child_by_field_name会返回None，需要按节点类型查找。
+        extends_node = next(
+            (child for child in node.named_children
+             if child.type == "extends_interfaces"),
+            None,
+        )
+        return _type_list_texts(extends_node, source_bytes)
+    return []
+
+
+def _implements_types(node, source_bytes: bytes) -> list[str]:
+    if node.type in {"class_declaration", "record_declaration", "enum_declaration"}:
+        return _type_list_texts(node.child_by_field_name("interfaces"), source_bytes)
+    return []
+
+
+def _type_list_texts(list_node, source_bytes: bytes) -> list[str]:
+    if list_node is None:
+        return []
+    texts = []
+    for child in list_node.named_children:
+        if child.type == "type_list":
+            texts.extend(_type_list_texts(child, source_bytes))
+        else:
+            type_text = _type_text(child, source_bytes)
+            if type_text:
+                texts.append(type_text)
+    return texts
+
+
+def _type_text(node, source_bytes: bytes) -> str | None:
+    return read_simple_java_type(
+        source_bytes[node.start_byte:node.end_byte].decode("utf-8")
+    )
 
 
 def _group_shared_declarations(

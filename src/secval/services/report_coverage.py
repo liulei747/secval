@@ -39,6 +39,13 @@ def report_completion(task, coverage):
     reasons = []
     if coverage.get("deferred"):
         reasons.append("仍有未收口的调查、基线问题或候选复核")
+    scope_groups = (coverage.get("scopeCoverage") or {}).get("groups") or []
+    missing_scope = [g for g in scope_groups
+                     if not g.get("delivered")]
+    if missing_scope:
+        reasons.append("仍有范围调查子任务未完成或未交付："
+                       + ", ".join(g.get("scope", "") or g.get("workerId", "")
+                                   for g in missing_scope))
     files = coverage.get("files", {})
     if not files.get("available"):
         reasons.append("缺少固定源码清单，不能判断文件审阅是否收口")

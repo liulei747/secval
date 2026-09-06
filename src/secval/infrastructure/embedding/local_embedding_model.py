@@ -41,7 +41,7 @@ class LocalEmbeddingModel:
         self.model_name = model_name
         self.expected_dimension = expected_dimension
 
-    def embed_code(self, code_texts: list[str]) -> list[list[float]]:
+    def embed_code(self, code_texts: list[str], progress=None) -> list[list[float]]:
         """批量把代码文本转换成归一化向量。"""
 
         if len(code_texts) == 0:
@@ -51,13 +51,21 @@ class LocalEmbeddingModel:
             if not code_text.strip():
                 raise ValueError("代码文本不能为空")
 
-        vectors = self.model.encode(
-            code_texts,
-            batch_size=CODE_EMBEDDING_BATCH_SIZE,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        ).tolist()
+        vectors: list[list[float]] = []
+        total = len(code_texts)
+        for start in range(0, total, CODE_EMBEDDING_BATCH_SIZE):
+            if progress is not None:
+                progress(start, total)
+            batch = code_texts[start:start + CODE_EMBEDDING_BATCH_SIZE]
+            vectors.extend(self.model.encode(
+                batch,
+                batch_size=CODE_EMBEDDING_BATCH_SIZE,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            ).tolist())
+            if progress is not None:
+                progress(min(start + len(batch), total), total)
 
         self._check_vector_dimensions(vectors)
         return vectors

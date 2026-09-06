@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from secval.config.audit_settings import load_audit_settings
 from secval.models.audit import AuditBusyError, AuditTaskInput, AuditUnavailableError, EvidenceServiceError
 
 router = APIRouter()
@@ -30,6 +31,30 @@ class ResumeRequest(BaseModel):
     max_seconds: int = Field(default=300, ge=30, le=3600)
     allow_remote_code: bool = False
     allow_remote_config: bool = False
+
+
+class AuditRuntimeSettingsResponse(BaseModel):
+    """可安全展示的审计模型运行配置，不包含地址或密钥正文。"""
+
+    configured: bool
+    model: str
+    tool_protocol: str
+    stream: bool
+    timeout_seconds: int
+    max_output_tokens: int
+
+
+@router.get("/api/audit-settings", response_model=AuditRuntimeSettingsResponse)
+def audit_runtime_settings():
+    settings = load_audit_settings()
+    return AuditRuntimeSettingsResponse(
+        configured=bool(settings.api_url.strip() and settings.api_key.strip()),
+        model=settings.model_name,
+        tool_protocol=settings.tool_protocol,
+        stream=settings.stream,
+        timeout_seconds=settings.timeout_seconds,
+        max_output_tokens=settings.max_output_tokens,
+    )
 
 
 @router.post("/api/audits/{task_id}/resume", status_code=202)
@@ -84,6 +109,15 @@ def cancel_audit(task_id: str, request: Request):
         raise HTTPException(404, "任务不存在") from None
 
 
+@router.get("/api/task-queues")
+def task_queue_stats(request: Request):
+    """统一队列深度：索引与审计各自的排队和执行数量。"""
+    return {
+        "index": request.app.state.index_job_service.store.queue_counts(),
+        "audit": request.app.state.audit_service.queue_stats(),
+    }
+
+
 @router.post("/api/audits/{task_id}/recover-stale")
 def recover_stale_audit(task_id: str, request: Request):
     """双重确认任务失联后收口，不自动续跑或再次调用模型。"""
@@ -116,6 +150,8 @@ textarea,select,button{padding:10px;margin:8px 0}textarea{width:95%;height:100px
 pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:20px}
 </style><h1>Secval · 只读审计实验</h1>
 <p>协作审计：主Agent与独立子Agent并行读取固定代码快照，结果均需人工复核。禁止执行仓库代码。</p>
+<p id="runtimeSettings">正在读取审计模型配置……</p>
+<p id="completionSummary">报告收口状态：尚未选择任务</p>
 <select id="repo"></select><textarea id="goal" placeholder="例如：调查登录入口及认证控制，记录证据、反证和未确认项"></textarea>
 <textarea id="context" maxlength="12000" placeholder="可选：实际部署方式、业务约束、攻击者权限；不要填写密钥"></textarea>
 <textarea id="threat" maxlength="12000" placeholder="可选：已有威胁模型，原文保留；不要填写密钥"></textarea>
@@ -133,6 +169,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:20px}
 <button id="recover">确认失联任务</button>
 <button id="resume">从检查点续跑（新任务）</button>
 <button id="export">导出当前报告（含源码）</button>
+<a id="graphLink" href="/graph" style="margin-left:10px">打开代码关系查询</a>
 <button id="refresh">刷新历史</button><select id="history"></select>
 <h2>子Agent进度</h2><p id="teamSummary">尚未选择任务</p>
 <table><thead><tr><th>编号</th><th>分工</th><th>任务</th><th>状态</th><th>本次/历史调用</th><th>停止原因</th></tr></thead><tbody id="workers"></tbody></table>
@@ -146,8 +183,24 @@ for(const t of tasks){const o=new Option(t.status+' · '+t.objective,t.id);el('h
 if(!tasks.some(t=>t.id===current))current=tasks.length?tasks[0].id:null;
 if(current){el('history').value=current;await show();}}
 async function show(){if(!current)return;const task=await api('/api/audits/'+current);el('out').textContent=JSON.stringify(task,null,2);
-const owner=task.worker_id?('；执行者：'+task.worker_id.slice(0,8)+'；第'+task.attempt+'次尝试；最近心跳：'+(task.heartbeat_at?new Date(task.heartbeat_at).toLocaleTimeString():'暂无')+'；租约：'+task.lease_state):'；尚未认领';
+const owner=task.worker_id?('；执行者：'+task.worker_id.slice(0,8)+'；第'+task.attempt+'次尝试；最近心跳：'+(task.heartbeat_at?new Date(task.heartbeat_at).toLocaleTimeString():'暂无')+'；租约：'+task.lease_state):'；排队等待Worker认领';
 el('teamSummary').textContent='任务状态：'+task.status+'；总调用：'+(task.model_calls||0)+' / '+task.max_steps+'；并发上限：'+(task.parallel_agents||1)+owner+(task.execution_active&& !['running','queued'].includes(task.status)?'；正在等待已发送请求退出':'');
+let completionText='报告收口状态：任务还在运行，尚未生成报告';
+if(['needs_review','failed','cancelled','interrupted','budget_exhausted'].includes(task.status)){
+  try{const report=await api('/api/audits/'+encodeURIComponent(current)+'/report');
+    const completion=report.completion||{};
+    completionText='报告收口状态：'+(completion.state||'未知')
+      +'；未收口原因：'+((completion.pendingReasons||[]).join('；')||'无');
+    const usage=report.tokenUsage||{};
+    if(usage.requestsTotal>0){completionText+='；模型用量：输入'+(usage.promptTokens||0)
+      '+输出'+(usage.completionTokens||0)+'='+(usage.totalTokens||0)+' token'
+      +'（'+usage.requestsCountedBySupplier+'/'+usage.requestsTotal+' 次请求有用量上报）';}
+    const scopes=(report.scopeCoverage||{}).groups||[];
+    if(scopes.length){completionText+='；范围子任务：'+scopes.map(s=>s.scope+'('
+      +(s.delivered?'已交付':'未交付')+')').join('、');}
+  }catch(e){completionText='报告收口状态：读取失败：'+e.message;}
+}
+el('completionSummary').textContent=completionText;
 el('workers').replaceChildren();for(const worker of task.agent_tasks||[]){const row=document.createElement('tr');
 for(const value of [worker.id,worker.role,worker.assignment.title,(worker.effective_status||worker.status)+(worker.reused_result?'（复用结果）':''),worker.calls+' / '+(worker.prior_calls||0),worker.stop_reason||'']){const cell=document.createElement('td');cell.textContent=String(value);row.appendChild(cell);}el('workers').appendChild(row);}}
 el('start').onclick=async()=>{try{const scope=JSON.parse(el('repo').value);const t=await api('/api/audits',{objective:el('goal').value,...scope,security_context:el('context').value,supplied_threat_model:el('threat').value,scope_paths:lines('paths'),approved_config_paths:lines('configs'),max_steps:Number(el('steps').value),max_seconds:Number(el('seconds').value),parallel_agents:Number(el('agents').value),independent_baseline:el('baseline').checked,allow_remote_config:el('configConsent').checked,allow_remote_code:el('consent').checked});current=t.id;await show();await history();}catch(e){el('out').textContent=e.message;}};
@@ -158,5 +211,6 @@ el('export').onclick=()=>{if(current)window.location.href='/api/audits/'+encodeU
 el('refresh').onclick=history;el('history').onchange=()=>{current=el('history').value;show();};
 setInterval(()=>show().catch(e=>el('out').textContent=e.message),3000);
 api('/api/repositories').then(d=>{for(const r of d.repositories)el('repo').add(new Option(r.repository_id+' / '+r.snapshot_id,JSON.stringify({repository_id:r.repository_id,snapshot_id:r.snapshot_id})));}).catch(e=>el('out').textContent=e.message);
+api('/api/audit-settings').then(s=>{el('runtimeSettings').textContent='模型：'+s.model+'；工具协议：'+s.tool_protocol+'；流式：'+s.stream+'；单次超时：'+s.timeout_seconds+'秒；输出上限：'+s.max_output_tokens+' token；配置：'+(s.configured?'已就绪':'未完成');}).catch(e=>el('runtimeSettings').textContent='读取模型配置失败：'+e.message);
 history().catch(e=>el('out').textContent=e.message);
 </script></html>"""

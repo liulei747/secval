@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import re
+import time
 import zipfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -41,6 +42,28 @@ def save(directory, name, value):
     (directory / name).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def wait_index_job(created, directory, *, timeout_seconds=600):
+    """轮询后台索引任务；失败时保存阶段信息，避免脚本退出掩盖真实原因。"""
+
+    job_id = created["id"]
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        job = request(f"/api/repositories/index-jobs/{job_id}")
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        manifest["index_job"] = {"id": job_id, "status": job["status"], "stage": job["stage"]}
+        save(directory, "manifest.json", manifest)
+        if job["status"] == "completed":
+            return job["result"]
+        if job["status"] in {"failed", "cancelled", "interrupted"}:
+            raise RuntimeError(
+                f"索引任务{job['status']}，阶段：{job['stage']}，"
+                f"错误：{job.get('error') or '无'}；可显式续跑任务 {job_id}"
+            )
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"索引任务超时未完成，任务编号 {job_id}，最后阶段：{job['stage']}")
+        time.sleep(2)
+
+
 def start(case):
     if any(task["status"] in {"queued", "running"} or task.get("execution_active") for task in request("/api/audits")):
         raise RuntimeError("正式API已有审计任务，停止创建测试")
@@ -62,10 +85,10 @@ def start(case):
         raise RuntimeError("上传结果与独立测试目录不一致，停止")
     manifest["stage"] = "index"
     save(directory, "manifest.json", manifest)
-    indexed = request("/api/repositories/index", {
+    indexed = wait_index_job(request("/api/repositories/index-jobs", {
         "repository_id": repository, "repository_name": "合成Web验收",
         "repository_path": repository, "snapshot_id": run_id, "version": "synthetic",
-    })
+    }), directory)
     manifest["index"] = {key: indexed[key] for key in ("index_run_id", "successful_files", "failed_files",
                                                        "saved_chunks", "saved_vectors", "deleted_chunks")}
     manifest["stage"] = "search"

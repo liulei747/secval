@@ -137,7 +137,11 @@ class IndexJobStore:
     def update_stage(self, job_id, stage):
         current = self.get(job_id)
         history = current["stage_history"]
-        if not history or history[-1]["stage"] != stage:
+        # 进度文本（如“生成代码向量 12/57”）会频繁变化：历史只记录阶段名，
+        # 当前进度覆盖 stage 字段供页面实时展示，不刷屏历史。
+        stage_name = stage.split(" ", 1)[0]
+        last_name = history[-1]["stage"].split(" ", 1)[0] if history else ""
+        if not history or last_name != stage_name:
             history.append({"stage": stage, "time": _now()})
         with self._connect() as db:
             db.execute("UPDATE index_jobs SET stage=?, stage_history_json=? WHERE id=?",
@@ -214,6 +218,17 @@ class IndexJobStore:
         with self._connect() as db:
             ids = [row[0] for row in db.execute("SELECT id FROM index_jobs ORDER BY rowid DESC LIMIT 100")]
         return [self.get(job_id) for job_id in ids]
+
+    def queue_counts(self):
+        """返回索引队列深度统计。"""
+        with self._connect() as db:
+            counts = {"queued": 0, "running": 0}
+            for status, total in db.execute(
+                "SELECT status, COUNT(*) FROM index_jobs "
+                "WHERE status IN ('queued','running') GROUP BY 1"
+            ):
+                counts[status] = total
+        return counts
 
     def next_queued(self):
         """读取最早排队任务；真正归属仍由claim的条件更新决定。"""

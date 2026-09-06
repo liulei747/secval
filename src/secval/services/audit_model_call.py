@@ -45,3 +45,10 @@ class RecordedAuditModel:
             # 已取消任务被冻结，不补写迟到响应；发送前的调用计数仍然保留。
             if saved["status"] != "cancelled":
                 self.store.update(self.task_id, model_requests=[*saved.get("model_requests", []), record])
+
+    def set_available_read_tools(self, tool_names):
+        """把任务能力范围传给实际模型适配器。"""
+
+        configure = getattr(self.model, "set_available_read_tools", None)
+        if configure is not None:
+            configure(tool_names)

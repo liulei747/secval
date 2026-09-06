@@ -283,3 +283,16 @@ def test_service_start_processes_existing_queue_without_new_request(tmp_path):
         assert saved["attempt"] == 1
     finally:
         service.close()
+
+
+def test_queue_counts_reflect_queued_and_running_jobs(tmp_path):
+    store = IndexJobStore(tmp_path / "jobs.sqlite3")
+    first = store.create({"repository_id": "job-1"})
+    store.create({"repository_id": "job-2"})
+    store.claim(first["id"], "worker-1", 20)
+
+    counts = store.queue_counts()
+    assert counts == {"queued": 1, "running": 1}
+
+    store.update(first["id"], status="completed", result={"ok": True})
+    assert store.queue_counts() == {"queued": 1, "running": 0}

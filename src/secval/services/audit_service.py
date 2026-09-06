@@ -1,10 +1,12 @@
 """审计任务业务编排。控制器不直接创建模型或提交后台任务。"""
 
 from collections.abc import Callable
+import json
 from concurrent.futures import Executor, Future
 from dataclasses import asdict, fields
 from pathlib import Path
 from threading import Event, Lock, Thread
+from time import sleep
 from uuid import uuid4
 
 from secval.cross_process_file_lock import CrossProcessFileLock
@@ -47,6 +49,9 @@ class AuditService:
                 self.store.mark_unfinished_interrupted()
             finally:
                 self.process_lock.release(startup_lock)
+        if self.store.next_queued() is not None:
+            with self.lock:
+                self._start_worker_if_needed()
 
     def create(self, command: AuditTaskInput):
         return self._create(command)
@@ -63,64 +68,150 @@ class AuditService:
         return self._create(AuditTaskInput(**values), parent=parent)
 
     def _create(self, command, parent=None):
-        with self.lock:
-            if self.future is not None and not self.future.done():
-                raise AuditBusyError("已有任务在运行或等待取消，请稍后再试")
-            process_lock = self.process_lock.try_acquire() if self.process_lock is not None else False
-            if self.process_lock is not None and process_lock is None:
-                raise AuditBusyError("其他API进程正在执行审计任务")
-            try:
-                model = self.model_factory()
-                tools = self.tools_factory(command.repository_id, command.snapshot_id)
-                if command.scope_paths:
-                    tools.call("restrict_scope", {"paths": command.scope_paths})
-                if command.approved_config_paths:
-                    tools.call("approve_config_files", {"paths": command.approved_config_paths})
-                if not tools.call("list_chunks", {})["total"]:
-                    raise ValueError("指定仓库快照没有已索引代码")
-                scope = tools.call("scope_info", {})
-                inventory = scope.pop("_inventory", None)
-                if command.parallel_agents > 1 and (not scope.get("source_snapshot_id")
-                                                     or not scope.get("index_run_id") or inventory is None):
-                    raise ValueError("协作审计需要已绑定的源码快照、索引批次和文件清单，请先完整建立索引")
-                continuation = {}
-                if parent is not None:
-                    saved = restore_checkpoint(parent, scope, inventory)
-                    continuation = {**saved["state"], "checkpoint": saved,
+        """只读预检并入库排队；模型、取证工具和进程锁留给执行Worker。"""
+        tools = self.tools_factory(command.repository_id, command.snapshot_id)
+        try:
+            if command.scope_paths:
+                tools.call("restrict_scope", {"paths": command.scope_paths})
+            if command.approved_config_paths:
+                tools.call("approve_config_files", {"paths": command.approved_config_paths})
+            if not tools.call("list_chunks", {})["total"]:
+                raise ValueError("指定仓库快照没有已索引代码")
+            scope = tools.call("scope_info", {})
+            inventory = scope.pop("_inventory", None)
+            if command.parallel_agents > 1 and (not scope.get("source_snapshot_id")
+                                                 or not scope.get("index_run_id") or inventory is None):
+                raise ValueError("协作审计需要已绑定的源码快照、索引批次和文件清单，请先完整建立索引")
+            continuation = {}
+            if parent is not None:
+                saved = restore_checkpoint(parent, scope, inventory)
+                continuation = {**saved["state"], "checkpoint": saved,
+                                    "previous_independent_reviews": parent.get("independent_reviews", []),
                                     "parent_task_id": parent["id"],
                                     "parent_report_submitted": parent["status"] == "needs_review",
                                     "prior_model_calls": parent.get("prior_model_calls", 0) + parent.get("model_calls", 0)}
-                    if parent.get("parallel_agents", 1) > 1:
-                        # 子任务可能比主检查点更新；保留各自最近的只读检查点。
-                        from copy import deepcopy
-                        continuation["agent_tasks"] = deepcopy(parent.get("agent_tasks", []))
-                        completed = {row["id"] for row in continuation["agent_tasks"] if row["status"] == "completed"}
-                        continuation["team_deliveries"] = [worker_id for worker_id in
+                if parent.get("parallel_agents", 1) > 1:
+                    # 子任务可能比主检查点更新；保留各自最近的只读检查点。
+                    from copy import deepcopy
+                    continuation["agent_tasks"] = deepcopy(parent.get("agent_tasks", []))
+                    completed = {row["id"] for row in continuation["agent_tasks"] if row["status"] == "completed"}
+                    continuation["team_deliveries"] = [worker_id for worker_id in
                             continuation.get("team_deliveries", []) if worker_id in completed]
-                        continuation["checkpoint"]["state"]["team_deliveries"] = continuation["team_deliveries"]
-                task = self.store.create({**asdict(command), **continuation})
-                task = self.store.update(task["id"], **continuation, scope=scope, source_inventory=inventory)
-                self.active_task_id = task["id"]
-                if command.parallel_agents > 1:
-                    team = AgentTeam(self.store, task["id"], self.model_factory, tools)
-                    self.future = self.executor.submit(
-                        self._run_with_lock, process_lock, self.store, task["id"],
-                        TeamModel(team, model), tools, team
-                    )
-                else:
-                    self.future = self.executor.submit(
-                        self._run_with_lock, process_lock, self.store, task["id"],
-                        RecordedAuditModel(model, self.store, task["id"]), tools
-                    )
-            except Exception:
-                if "tools" in locals():
-                    tools.close()
-                if "task" in locals():
-                    self.store.update(task["id"], status="failed", error="任务调度失败")
+                    continuation["checkpoint"]["state"]["team_deliveries"] = continuation["team_deliveries"]
+            task = self.store.create({**asdict(command), **continuation})
+            task = self.store.update(task["id"], **continuation, scope=scope, source_inventory=inventory)
+        except Exception:
+            tools.close()
+            raise
+        else:
+            tools.close()
+        with self.lock:
+            self._start_worker_if_needed()
+        return task
+
+    def _start_worker_if_needed(self):
+        if self.future is None or self.future.done():
+            self.future = self.executor.submit(self._drain_queue)
+            self.future.add_done_callback(self._worker_finished)
+
+    def _worker_finished(self, finished_future):
+        """Worker退出后如果队列仍有任务，继续拉起。"""
+        with self.lock:
+            if self.future is finished_future and self.store.next_queued() is not None:
+                self._start_worker_if_needed()
+
+    def _drain_queue(self):
+        while True:
+            job = self.store.next_queued()
+            if job is None:
+                return
+            process_lock = (self.process_lock.try_acquire()
+                            if self.process_lock is not None else False)
+            if self.process_lock is not None and process_lock is None:
+                sleep(0.2)
+                continue
+            current = self.store.next_queued()
+            if current is None:
                 if self.process_lock is not None:
                     self.process_lock.release(process_lock)
-                raise
-            return task
+                continue
+            self._execute_claimed(current["id"], current, process_lock)
+
+    @staticmethod
+    def _submit_scope_splits(team, task):
+        """大项目按顶层目录拆分范围调查子任务（P2-9 第一步）。
+
+        scope_paths 覆盖多个顶层目录时，每组大约一个并行槽位；
+        单目录或无 scope_paths 不拆分，仍由主调查自行安排。
+        子任务受既有 12 上限、预算预留和 start_investigator 复用约束。
+        """
+        scope_paths = task.get("scope_paths") or []
+        if len(scope_paths) < 2:
+            return
+        top_dirs = sorted({path.strip("/").split("/")[0] for path in scope_paths
+                           if path.strip("/")})
+        if len(top_dirs) < 2:
+            return
+        parallel = max(1, task.get("parallel_agents", 1) - 1)
+        group_size = max(1, -(-len(top_dirs) // parallel))
+        for index in range(0, len(top_dirs), group_size):
+            group = top_dirs[index:index + group_size]
+            paths = [path for path in scope_paths
+                     if path.strip("/").split("/")[0] in group]
+            team.submit("scope", {"title": "范围调查：" + ", ".join(group),
+                                  "question": "只调查以下范围内的入口、信任边界与控制："
+                                  + json.dumps(paths, ensure_ascii=False),
+                                  "evidence_ids": []})
+
+    def _execute_claimed(self, task_id, task, process_lock):
+        model = self.model_factory()
+        tools = self.tools_factory(task["repository_id"], task["snapshot_id"])
+        team = None
+        stop_heartbeat = Event()
+        heartbeat_thread = None
+        try:
+            if self.process_lock is not None:
+                if not self.store.claim(task_id, self.worker_id, self.lease_seconds):
+                    if team is not None:
+                        team.close()
+                    tools.close()
+                    return
+                heartbeat_thread = Thread(
+                    target=self._keep_lease_alive,
+                    args=(task_id, stop_heartbeat),
+                    name=f"audit-heartbeat-{task_id[:8]}",
+                    daemon=True,
+                )
+                heartbeat_thread.start()
+            if task.get("scope_paths"):
+                tools.call("restrict_scope", {"paths": task["scope_paths"]})
+            if task.get("approved_config_paths"):
+                tools.call("approve_config_files", {"paths": task["approved_config_paths"]})
+            self.active_task_id = task_id
+            if task.get("parallel_agents", 1) > 1:
+                team = AgentTeam(self.store, task_id, self.model_factory, tools)
+                self._submit_scope_splits(team, task)
+                run_task(self.store, task_id, TeamModel(team, model), tools, team)
+            else:
+                run_task(self.store, task_id, RecordedAuditModel(model, self.store, task_id), tools)
+        except Exception:
+            if team is not None:
+                team.close()
+            tools.close()
+            current = self.store.get(task_id)
+            if current["status"] in ("queued", "running"):
+                self.store.update(task_id, status="failed", error="任务执行失败")
+            if self.process_lock is not None:
+                self.store.finish_execution(task_id, self.worker_id)
+                self.process_lock.release(process_lock)
+            raise
+        finally:
+            stop_heartbeat.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=self.heartbeat_interval + 1)
+            if self.process_lock is not None:
+                self.store.finish_execution(task_id, self.worker_id)
+                self.process_lock.release(process_lock)
 
     def _run_with_lock(self, process_lock, store, task_id, model, tools, team=None):
         """认领并执行完整审计，任何退出路径都会结束租约和文件锁。"""
@@ -167,6 +258,8 @@ class AuditService:
     def get(self, task_id: str):
         task = self.store.get(task_id)
         task["execution_active"] = self._is_active(task_id)
+        if hasattr(self.store, "queue_position"):
+            task["queue_position"] = self.store.queue_position(task_id)
         for worker in task.get("agent_tasks", []):
             worker["effective_status"] = worker["status"]
             if task["status"] == "cancelled" and worker["status"] in ("running", "queued"):
@@ -178,6 +271,12 @@ class AuditService:
 
     def report(self, task_id: str):
         return export_audit_report(self.store.get(task_id))
+
+    def queue_stats(self):
+        """返回当前进程观察到的队列深度。"""
+        if hasattr(self.store, "queue_counts"):
+            return self.store.queue_counts()
+        return {"queued": 0, "running": 0}
 
     def cancel(self, task_id: str):
         with self.lock:

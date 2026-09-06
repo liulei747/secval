@@ -22,7 +22,19 @@ def test_second_service_does_not_interrupt_task_owned_by_another_process(tmp_pat
     outside_lock = CrossProcessFileLock(str(database) + ".lock")
     handle = outside_lock.try_acquire()
     assert handle is not None
-    second = AuditService(AuditStore(database), MagicMock(), MagicMock(), MagicMock())
+    tools = MagicMock()
+
+    def tool_call(name, arguments):
+        if name == "list_chunks":
+            return {"total": 1, "rows": []}
+        if name == "scope_info":
+            return {"repository_id": "repo", "snapshot_id": "snapshot",
+                    "source_snapshot_id": "source", "index_run_id": "run", "_inventory": []}
+        raise AssertionError(f"未预期的工具：{name}")
+
+    tools.call.side_effect = tool_call
+    second = AuditService(AuditStore(database), MagicMock(), MagicMock(),
+                          lambda repository_id, snapshot_id: tools)
     try:
         assert second.store.get(task["id"])["status"] == "running"
         command = AuditTaskInput(
@@ -31,8 +43,10 @@ def test_second_service_does_not_interrupt_task_owned_by_another_process(tmp_pat
             snapshot_id="snapshot",
             allow_remote_code=True,
         )
-        with pytest.raises(AuditBusyError, match="其他API进程"):
-            second.create(command)
+        # 新语义：忙碌时任务持久化排队，而不是拒绝创建。
+        queued = second.create(command)
+        assert queued["status"] == "queued"
+        assert second.store.get(task["id"])["status"] == "running"
     finally:
         second.close()
         outside_lock.release(handle)
@@ -137,3 +151,20 @@ def test_cancel_before_worker_claim_is_finalized(tmp_path):
     assert saved["status"] == "cancelled"
     assert saved["finished_at"] is not None
     assert saved["lease_expires_at"] is None
+
+
+def test_audit_queue_position_and_counts(tmp_path):
+    store = AuditStore(tmp_path / "tasks.sqlite3")
+    first = store.create({"objective": "队列位置一"})
+    second = store.create({"objective": "队列位置二"})
+
+    assert store.queue_position(first["id"]) == 1
+    assert store.queue_position(second["id"]) == 2
+    assert store.queue_counts() == {"queued": 2, "running": 0}
+
+    assert store.claim(first["id"], "worker-1", 20) is True
+    assert store.queue_position(first["id"]) is None
+    assert store.queue_counts() == {"queued": 1, "running": 1}
+
+    store.update(first["id"], status="budget_exhausted")
+    assert store.queue_counts() == {"queued": 1, "running": 0}

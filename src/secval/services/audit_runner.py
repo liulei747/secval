@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import as_completed
 from dataclasses import asdict
 from time import monotonic
 
@@ -105,6 +106,9 @@ def _run_task(store, task_id, model, tools, team=None):
     task = store.get(task_id)
     if task["status"] == "cancelled":
         return
+    configure_tools = getattr(model, "set_available_read_tools", None)
+    if configure_tools is not None:
+        configure_tools(task.get("scope", {}).get("tools", []))
     store.update(task_id, status="running", phase="investigation", schema_version=3,
                  read_coverage=read_coverage(task.get("evidence", {})))
     messages = [
@@ -245,18 +249,38 @@ def _run_task(store, task_id, model, tools, team=None):
                     messages.append({"role": "user", "content": "报告暂未提交：请核对刚交付的子任务结果和未完成项后重新决定。"})
                     store.update(task_id, checkpoint=checkpoint(messages, store.get(task_id)))
                     continue
+                if team and team.resume_for_validation():
+                    # 预算保留暂停的子任务在报告前用保留额度收尾，候选不能永远停在待复核。
+                    team.wait_for_result()
+                    team.deliver(messages, evidence, file_reviews)
+                    messages.append({"role": "user", "content": "报告暂未提交：因预算保留暂停的子任务已完成收尾，请核对其结果后重新决定。"})
+                    store.update(task_id, checkpoint=checkpoint(messages, store.get(task_id)))
+                    continue
                 store.update(task_id, phase="validation", draft_report=report)
-                validations = []
+                # 原地恢复验证阶段：续跑时从父任务携带已完成复核，输入与证据
+                # 一致则跳过模型；不一致的候选项重新独立复核。
+                validations = [
+                    # 直接标记复用并跳过重复模型调用；逐项校验仍由
+                    # review_packet 的指纹/证据匹配负责，此处只按候选编号预筛。
+                    {**dict(row), "reused": True}
+                    for row in store.get(task_id).get("previous_independent_reviews", [])
+                    if isinstance(row, dict) and not row.get("error")
+                    and row.get("investigation_id") in {item["id"] for item in investigations}
+                ]
                 calls = step + 1
 
                 def reserve_call():
                     nonlocal calls
                     if team:
                         team.check_running()
-                        return store.get(task_id).get("model_calls", 0) < task["max_steps"]
+                        if store.get(task_id).get("model_calls", 0) >= task["max_steps"]:
+                            raise TeamStopped("step_limit")
+                        return True
                     used_calls = store.get(task_id).get("model_calls", 0) if team else calls
-                    if used_calls >= task["max_steps"] or monotonic() - start >= task.get("max_seconds", 300):
-                        return False
+                    if used_calls >= task["max_steps"]:
+                        raise TeamStopped("step_limit")
+                    if monotonic() - start >= task.get("max_seconds", 300):
+                        raise TeamStopped("time_limit")
                     calls += 1
                     store.update(task_id, model_calls=calls)
                     return True
@@ -284,6 +308,7 @@ def _run_task(store, task_id, model, tools, team=None):
                         cancelled=lambda: store.get(task_id)["status"] == "cancelled",
                         on_tool=lambda action, result: tool_events.append((action, result)),
                         user_context={**user_context, "scope": task.get("scope")}, detail=detail,
+                        previous_reviews=task.get("previous_independent_reviews", []),
                     )
                     return validation, review_tools.evidence, tool_events
 
@@ -297,6 +322,16 @@ def _run_task(store, task_id, model, tools, team=None):
                         break
                     boundary = next(b for b in boundaries if b["id"] == candidate["boundary_id"])
                     detail = next((d for d in reversed(finding_details) if d["investigation_id"] == candidate["id"]), None)
+                    existing = next((row for row in validations
+                                     if row["investigation_id"] == candidate["id"]), None)
+                    if existing is not None:
+                        if existing.get("error"):
+                            # 失败记录不占位：移除后按常规流程重新复核。
+                            validations = [row for row in validations
+                                           if row is not existing]
+                        else:
+                            # 已有可核对复核记录：即使脚本再次请求，也不重复调用模型。
+                            continue
                     if detail is None:
                         # 没有详情就无法验证详情指纹，保留缺口，不浪费调用做无法提升的复核。
                         validations.append({"investigation_id": candidate["id"], "outcome": "inconclusive",
@@ -313,6 +348,7 @@ def _run_task(store, task_id, model, tools, team=None):
                             cancelled=lambda: store.get(task_id)["status"] == "cancelled",
                             on_tool=save_validation_tool,
                             user_context={**user_context, "scope": task.get("scope")}, detail=detail,
+                            previous_reviews=task.get("previous_independent_reviews", []),
                         )
                     except (ModelOutputError, ModelRequestError, ValueError):
                         validation = {"investigation_id": candidate["id"], "outcome": "inconclusive",
@@ -321,21 +357,42 @@ def _run_task(store, task_id, model, tools, team=None):
                     validations.append(validation)
                     store.update(task_id, independent_reviews=validations)
 
-                # 复核请求并行执行，主线程按调查顺序合并，避免并发覆盖证据、事件和报告。
-                for candidate, future in review_jobs:
+                # 谁先结束就先持久化，避免慢请求挡住其他已经完成的复核。
+                # 只有主线程合并证据和报告，避免并发覆盖台账。
+                candidates_by_future = {future: candidate for candidate, future in review_jobs}
+                investigation_order = {item["id"]: index for index, item in enumerate(investigations)}
+                for future in as_completed(candidates_by_future):
+                    if store.get(task_id)["status"] == "cancelled":
+                        return
+                    candidate = candidates_by_future[future]
                     try:
                         validation, added_evidence, tool_events = future.result()
                         evidence.update(added_evidence)
                         for action, result in tool_events:
                             save_validation_tool(action, result)
-                    except (ModelOutputError, ModelRequestError, ValueError, TeamStopped):
+                    except TeamStopped as error:
+                        # 预算停止与网络/响应失败分开，便于用户判断续跑需要调整什么。
+                        reasons = {
+                            "step_limit": "复核未完成：共享模型调用额度已耗尽",
+                            "time_limit": "复核未完成：任务总时长已耗尽",
+                            "cancelled_or_parent_stopped": "复核未完成：任务已停止",
+                        }
+                        reason = error.reason if error.reason in reasons else "task_stopped"
+                        validation = {"investigation_id": candidate["id"], "outcome": "inconclusive",
+                                      "method": "independent_context_packet_review",
+                                      "stop_reason": reason,
+                                      "error": reasons.get(reason, "复核未完成：任务已停止")}
+                    except (ModelOutputError, ModelRequestError, ValueError):
                         validation = {"investigation_id": candidate["id"], "outcome": "inconclusive",
                                       "method": "independent_context_packet_review",
                                       "error": "复核未完成：响应、网络或证据包限制；不自动重试"}
                     validations.append(validation)
+                    validations.sort(key=lambda item: investigation_order[item["investigation_id"]])
                     store.update(task_id, independent_reviews=validations)
                 report["coverage"] = report_coverage(boundaries, investigations, validations, store.get(task_id).get("baseline"))
                 report["independent_reviews"] = validations
+                # 复用或新增后都要写入持久层，导出报告从此处读取，而不是父任务残留值。
+                store.update(task_id, independent_reviews=validations)
                 report["candidateDetails"] = finding_details
                 report["fileReviews"] = file_reviews
                 report["coverage"]["files"] = file_review_coverage(task.get("source_inventory"),

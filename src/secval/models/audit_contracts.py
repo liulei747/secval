@@ -134,6 +134,17 @@ class ToolAction:
             limit = args.get("limit", 20)
             if type(limit) is not int or not 1 <= limit <= 50:
                 raise ModelOutputError("find_code_relations的limit必须是1到50的整数")
+        if name in {
+            "find_code_callers",
+            "find_code_callees",
+            "find_dispatch_targets",
+            "find_code_type_relations",
+        }:
+            if not text(args.get("symbol")) or len(args["symbol"]) > 300:
+                raise ModelOutputError("symbol必须是1到300字符的非空文本")
+            limit = args.get("limit", 20)
+            if type(limit) is not int or not 1 <= limit <= 50:
+                raise ModelOutputError(f"{name}的limit必须是1到50的整数")
         if name == "find_code_calls":
             method = args.get("method")
             if not text(method) or len(method) > 200:
@@ -151,7 +162,10 @@ class ToolAction:
                 raise ModelOutputError("find_data_paths的limit必须是1到20的整数")
         if name == "find_entry_points":
             framework = args.get("framework", "all")
-            if framework not in {"all", "spring", "jax_rs", "fastapi_flask", "django"}:
+            if framework not in {
+                "all", "spring", "jax_rs", "fastapi_flask", "django", "express_koa",
+                "nestjs"
+            }:
                 raise ModelOutputError("find_entry_points的framework不受支持")
             limit = args.get("limit", 50)
             if type(limit) is not int or not 1 <= limit <= 100:
