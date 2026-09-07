@@ -11,8 +11,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
 RUN python -m pip install --upgrade pip \
-    && python -m pip install torch --index-url https://download.pytorch.org/whl/cpu \
+    && python -m pip install torch --index-url ${TORCH_INDEX} \
     && python -m pip install --requirement requirements.txt
 
 # 依赖层只在 requirements.txt 改变时重建；业务代码修改不会重新下载 PyTorch。

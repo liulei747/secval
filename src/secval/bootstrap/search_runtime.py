@@ -102,7 +102,7 @@ def _create_embedding_model(settings: SearchSettings) -> EmbeddingModel:
     if provider == "local":
         return LocalEmbeddingModel(
             model_name=settings.embedding.model_name,
-            device=settings.embedding.device,
+            device=os.getenv("SECVAL_EMBEDDING_DEVICE", settings.embedding.device).strip().lower(),
             max_sequence_length=settings.embedding.max_sequence_length,
             expected_dimension=settings.embedding.dimension,
         )

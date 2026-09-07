@@ -16,12 +16,15 @@ class CodeGraphStore:
             "CREATE CONSTRAINT snapshot_key IF NOT EXISTS FOR (n:CodeSnapshot) REQUIRE n.key IS UNIQUE",
             "CREATE CONSTRAINT file_key IF NOT EXISTS FOR (n:CodeFile) REQUIRE n.key IS UNIQUE",
             "CREATE CONSTRAINT symbol_key IF NOT EXISTS FOR (n:CodeSymbol) REQUIRE n.key IS UNIQUE",
+            "CREATE INDEX symbol_short_name IF NOT EXISTS FOR (n:CodeSymbol) ON (n.short_name)",
+            "CREATE INDEX symbol_owner_full_name IF NOT EXISTS FOR (n:CodeSymbol) ON (n.owner_full_name)",
         ]
         for query in queries:
             self.driver.execute_query(query, database_="neo4j")
 
     def save_snapshot(self, repository_id, snapshot_id, index_run_id, chunks):
         """新批次全部写完后才返回；同一符号只保存一次。"""
+        snapshot_key = f"{repository_id}:{snapshot_id}:{index_run_id}"
         files = {}
         symbols = {}
         calls = []
@@ -105,6 +108,7 @@ class CodeGraphStore:
                     for code_call in chunk.code_calls:
                         calls.append({
                             "caller_id": str(caller_id),
+                            "caller_key": snapshot_key + ":" + str(caller_id),
                             "callee_name": code_call.name,
                             "receiver_type": code_call.receiver_type,
                             "receiver_type_full_name": code_call.receiver_type_full_name,
@@ -118,6 +122,7 @@ class CodeGraphStore:
                     for callee_name in chunk.called_symbol_names:
                         calls.append({
                             "caller_id": str(caller_id),
+                            "caller_key": snapshot_key + ":" + str(caller_id),
                             "callee_name": callee_name,
                             "receiver_type": None,
                             "receiver_type_full_name": None,
@@ -211,15 +216,13 @@ class CodeGraphStore:
             self.driver.execute_query("""
             UNWIND range(0, size($calls) - 1) AS call_index
             WITH $calls[call_index] AS call, call_index
-            MATCH (caller:CodeSymbol)
-            WHERE caller.key = $snapshot_key + ':' + call.caller_id
-            MATCH (callee:CodeSymbol)
+            MATCH (caller:CodeSymbol {key: call.caller_key})
+            MATCH (callee:CodeSymbol {short_name: call.callee_name})
             WHERE callee.key STARTS WITH $snapshot_key + ':'
-              AND callee.short_name = call.callee_name
               AND ((call.receiver_type_full_name IS NOT NULL
                     AND (callee.owner_full_name = call.receiver_type_full_name
                          OR (EXISTS {
-                            MATCH (receiverType:CodeSymbol)
+                            MATCH (receiverType:CodeSymbol {name: call.receiver_type_full_name})
                                   -[:EXTENDS|IMPLEMENTS*1..]->(ancestorType:CodeSymbol)
                             WHERE receiverType.key STARTS WITH $snapshot_key + ':'
                               AND receiverType.name = call.receiver_type_full_name

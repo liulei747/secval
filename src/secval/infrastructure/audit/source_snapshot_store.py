@@ -175,18 +175,24 @@ class SourceSnapshotStore:
             root = Path(directory).resolve()
             if not root.is_relative_to(base):
                 raise ValueError("Joern临时目录越界")
+            skipped = 0
             for relative, status in rows:
                 if not is_supported_source(relative):
                     continue
                 if language is not None and language_for_source(relative) != language:
                     continue
                 if status != "captured":
-                    raise ValueError("存在未采集的受支持源文件，不能建立Joern分析图")
+                    skipped += 1
+                    continue
                 destination = (root / relative).resolve()
                 if not destination.is_relative_to(root):
                     raise ValueError("Joern快照路径越界")
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(self.read(snapshot_id, relative), encoding="utf-8")
+            if skipped:
+                logging.getLogger(__name__).warning(
+                    "Joern还原跳过 %d 个采集策略排除的受支持源文件", skipped
+                )
             yield root.as_posix()
 
     def bind(self, source_snapshot_id: str, repository_id: str,

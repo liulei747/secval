@@ -5,6 +5,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # GPU 版 torch（cu128）；CPU-only 构建时改回 cpu index。
+        TORCH_INDEX: https://download.pytorch.org/whl/cu128
     container_name: secval-api
     environment:
       - HF_HOME=/models/huggingface
@@ -30,6 +33,8 @@ services:
       - SECVAL_EMBEDDING_API_DIMENSION=${SECVAL_EMBEDDING_API_DIMENSION:-1024}
       - SECVAL_EMBEDDING_API_BATCH_SIZE=${SECVAL_EMBEDDING_API_BATCH_SIZE:-64}
       - SECVAL_EMBEDDING_API_TIMEOUT_SECONDS=${SECVAL_EMBEDDING_API_TIMEOUT_SECONDS:-120}
+      # local 模型运行设备；GPU 透传启用后建议 cuda。
+      - SECVAL_EMBEDDING_DEVICE=${SECVAL_EMBEDDING_DEVICE:-cuda}
       # API 模型必须使用独立 Collection，不能与本地模型向量混用。
       - SECVAL_VECTOR_COLLECTION=${SECVAL_VECTOR_COLLECTION:-secval-code-vectors-qwen3-06b-v2}
       - SECVAL_NEO4J_URI=neo4j://neo4j:7687
@@ -63,6 +68,7 @@ services:
       joern:
         condition: service_healthy
     restart: unless-stopped
+    gpus: all
     healthcheck:
       test:
         - CMD-SHELL
@@ -135,6 +141,7 @@ services:
     networks:
       - services
     restart: unless-stopped
+    gpus: all
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s

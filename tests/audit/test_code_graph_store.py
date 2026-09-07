@@ -82,18 +82,19 @@ def test_call_edges_are_written_from_chunk_references():
     second_call = driver.execute_query.call_args_list[1]
     assert "MERGE (caller)-[relation:CALLS {call_index: call_index}]->(callee)" in second_call.args[0]
     assert second_call.kwargs["calls"] == [
-        {"caller_id": "symbol-caller", "callee_name": "run",
+        {"caller_id": "symbol-caller", "caller_key": "repo:snap:run-1:symbol-caller", "callee_name": "run",
          "receiver_type": None, "receiver_type_full_name": None,
          "argument_count": None, "positional_argument_count": None,
          "keyword_argument_names": [], "has_argument_unpacking": False,
          "line": 3},
-        {"caller_id": "symbol-caller", "callee_name": "log",
+        {"caller_id": "symbol-caller", "caller_key": "repo:snap:run-1:symbol-caller", "callee_name": "log",
          "receiver_type": None, "receiver_type_full_name": None,
          "argument_count": None, "positional_argument_count": None,
          "keyword_argument_names": [], "has_argument_unpacking": False,
          "line": 3},
     ]
-    assert "callee.short_name = call.callee_name" in second_call.args[0]
+    assert "callee.short_name = call.callee_name" not in second_call.args[0]
+    assert "MATCH (callee:CodeSymbol {short_name: call.callee_name})" in second_call.args[0]
     assert "callee.key STARTS WITH" in second_call.args[0]
     assert "callee.owner_short_name = call.receiver_type" in second_call.args[0]
     assert "callee.owner_full_name = call.receiver_type_full_name" in second_call.args[0]
@@ -116,7 +117,7 @@ def test_call_edges_include_receiver_type_argument_count_and_line():
     CodeGraphStore(driver).save_snapshot("repo", "snap", "run-1", [chunk])
 
     assert driver.execute_query.call_args_list[1].kwargs["calls"] == [{
-        "caller_id": "caller-id", "callee_name": "run",
+        "caller_id": "caller-id", "caller_key": "repo:snap:run-1:caller-id", "callee_name": "run",
         "receiver_type": "OrderService", "receiver_type_full_name": None,
         "argument_count": 1, "positional_argument_count": None,
         "keyword_argument_names": [], "has_argument_unpacking": False,
