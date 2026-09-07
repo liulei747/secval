@@ -175,7 +175,7 @@ class EvidenceTools:
             rows = [row for row in rows if in_scope(row.get("path", ""), self.scope_paths)]
             return {"rows": rows, "view_id": bound["view_id"],
                     "index_run_id": bound["index_run_id"],
-                    "relation_note": "CALLS静态引用由Tree-sitter生成；可确认时按接收者类型和参数个数缩小候选，仍须read_file核实"}
+                    "relation_note": "CALLS由Joern解析并经Tree-sitter调用点核对；运行时动态分派仍须read_file核实"}
         if name == "find_code_callees":
             from secval.models.audit_contracts import ToolAction
             ToolAction.parse({"tool": name, "arguments": arguments})
@@ -195,7 +195,7 @@ class EvidenceTools:
             ]
             return {"rows": rows, "view_id": bound["view_id"],
                     "index_run_id": bound["index_run_id"],
-                    "relation_note": "CALLS静态引用由Tree-sitter生成；可确认时按接收者类型和参数个数缩小候选，仍须read_file核实"}
+                    "relation_note": "CALLS由Joern解析并经Tree-sitter调用点核对；运行时动态分派仍须read_file核实"}
         if name == "find_dispatch_targets":
             from secval.models.audit_contracts import ToolAction
             ToolAction.parse({"tool": name, "arguments": arguments})

@@ -78,6 +78,51 @@ class JoernClient:
                     rows.append({"method": parts[0], "path": parts[1], "line": int(parts[2])})
         return rows
 
+    def export_call_sites(self, index_run_id):
+        """导出CPG调用点；调用目标由Joern给出，不在Neo4j中重新猜测。"""
+        rows = []
+        for project in self._project_names(index_run_id):
+            offset = 0
+            page_size = 1000
+            while True:
+                query = (
+                    f'open("{project}"); '
+                    'val secvalResult = cpg.call.filter(call => '
+                    f'!Option(call.name).getOrElse("").startsWith("<operator>")).drop({offset})'
+                    f'.take({page_size}).map(call => {{ '
+                    'val fields = Seq('
+                    'call.method.fullName.headOption.getOrElse(""), '
+                    'Option(call.methodFullName).getOrElse(""), '
+                    'Option(call.name).getOrElse(""), '
+                    'Option(call.location.filename).getOrElse(""), '
+                    'call.lineNumber.getOrElse(0).toString, '
+                    'call.columnNumber.getOrElse(0).toString, '
+                    'Option(call.dispatchType).getOrElse(""), '
+                    'Option(call.signature).getOrElse(""), Option(call.code).getOrElse("")); '
+                    'java.util.Base64.getEncoder.encodeToString(fields.mkString("\\u0000")'
+                    '.getBytes(java.nio.charset.StandardCharsets.UTF_8)) }).l.mkString("SECVAL:", ",", ""); '
+                    f'close("{project}"); secvalResult'
+                )
+                encoded_rows = self._marked_values(self._query(query), "Joern调用图导出")
+                for encoded in encoded_rows:
+                    try:
+                        value = base64.b64decode(encoded, validate=True).decode("utf-8")
+                    except (ValueError, UnicodeDecodeError):
+                        raise RuntimeError("Joern调用图导出返回损坏数据") from None
+                    fields = value.split("\0")
+                    if len(fields) != 9 or not fields[4].isdigit() or not fields[5].isdigit():
+                        raise RuntimeError("Joern调用图导出字段不完整")
+                    rows.append({
+                        "caller_full_name": fields[0], "callee_full_name": fields[1],
+                        "name": fields[2], "path": fields[3], "line": int(fields[4]),
+                        "column": int(fields[5]), "dispatch_type": fields[6],
+                        "signature": fields[7], "code": fields[8], "project": project,
+                    })
+                if len(encoded_rows) < page_size:
+                    break
+                offset += page_size
+        return rows
+
     def find_data_paths(self, index_run_id, source_method, sink_method, limit=10):
         """查找源方法参数到目标调用参数的数据流，只返回位置。"""
         self._validate_method(source_method)

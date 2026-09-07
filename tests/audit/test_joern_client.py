@@ -1,13 +1,13 @@
 """Joern客户端只接受安全参数，并把输出转换成简单位置。"""
 
-from unittest.mock import MagicMock
 import base64
 from threading import Event, Thread
+from unittest.mock import MagicMock
 
 import pytest
 
-from secval.infrastructure.joern import JoernClient
 from secval.bootstrap import joern_runtime
+from secval.infrastructure.joern import JoernClient
 
 
 def test_import_code_saves_generated_dataflow_overlay():
@@ -87,6 +87,31 @@ def test_find_calls_combines_language_projects():
     assert {(row["path"], row["line"]) for row in rows} == {
         ("Safe.java", 4), ("service.py", 9)
     }
+
+
+def test_export_call_sites_keeps_joern_resolution_metadata():
+    project = base64.b64encode(b"secval-run-1-java").decode()
+    separator = "\0"
+    fields = separator.join((
+        "demo.Controller.submit:void()", "demo.Service.run:void()", "run",
+        "/joern-inputs/demo/src/Controller.java", "12", "9",
+        "DYNAMIC_DISPATCH", "void()", "service.run()",
+    ))
+    row = base64.b64encode(fields.encode()).decode()
+    client = JoernClient("http://joern:8080")
+    client._query = MagicMock(side_effect=[f'"SECVAL:{project}"', f'"SECVAL:{row}"'])
+
+    assert client.export_call_sites("run-1") == [{
+        "caller_full_name": "demo.Controller.submit:void()",
+        "callee_full_name": "demo.Service.run:void()", "name": "run",
+        "path": "/joern-inputs/demo/src/Controller.java", "line": 12,
+        "column": 9, "dispatch_type": "DYNAMIC_DISPATCH",
+        "signature": "void()", "code": "service.run()",
+        "project": "secval-run-1-java",
+    }]
+    query = client._query.call_args_list[-1].args[0]
+    assert 'Option(call.name).getOrElse("")' in query
+    assert ".take(1000)" in query
 
 
 def test_javascript_uses_its_own_joern_project():

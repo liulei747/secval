@@ -1,4 +1,6 @@
-"""把索引中的文件和符号保存成可按版本替换的代码关系图。"""
+"""把索引中的文件、符号和Joern已解析调用保存成可替换的代码图。"""
+
+from pathlib import PurePosixPath
 
 
 class CodeGraphStore:
@@ -16,18 +18,20 @@ class CodeGraphStore:
             "CREATE CONSTRAINT snapshot_key IF NOT EXISTS FOR (n:CodeSnapshot) REQUIRE n.key IS UNIQUE",
             "CREATE CONSTRAINT file_key IF NOT EXISTS FOR (n:CodeFile) REQUIRE n.key IS UNIQUE",
             "CREATE CONSTRAINT symbol_key IF NOT EXISTS FOR (n:CodeSymbol) REQUIRE n.key IS UNIQUE",
+            "CREATE CONSTRAINT callsite_key IF NOT EXISTS FOR (n:CallSite) REQUIRE n.key IS UNIQUE",
+            "CREATE CONSTRAINT framework_entry_key IF NOT EXISTS FOR (n:FrameworkEntry) REQUIRE n.key IS UNIQUE",
             "CREATE INDEX symbol_short_name IF NOT EXISTS FOR (n:CodeSymbol) ON (n.short_name)",
             "CREATE INDEX symbol_owner_full_name IF NOT EXISTS FOR (n:CodeSymbol) ON (n.owner_full_name)",
         ]
         for query in queries:
             self.driver.execute_query(query, database_="neo4j")
 
-    def save_snapshot(self, repository_id, snapshot_id, index_run_id, chunks):
+    def save_snapshot(self, repository_id, snapshot_id, index_run_id, chunks,
+                      call_sites=None, java_spring_model=None, progress=None, batch_size=500):
         """新批次全部写完后才返回；同一符号只保存一次。"""
         snapshot_key = f"{repository_id}:{snapshot_id}:{index_run_id}"
         files = {}
         symbols = {}
-        calls = []
         type_relations = []
         override_relations = []
         for chunk in chunks:
@@ -100,43 +104,10 @@ class CodeGraphStore:
                     "type": chunk.chunk_type, "file_id": str(chunk.file_id),
                     "start_line": chunk.start_line, "end_line": chunk.end_line,
                 }
-            caller_id = chunk.symbol_id
-            if caller_id is None and len(chunk.symbol_ids) == 1:
-                caller_id = chunk.symbol_ids[0]
-            if caller_id is not None:
-                if chunk.code_calls:
-                    for code_call in chunk.code_calls:
-                        calls.append({
-                            "caller_id": str(caller_id),
-                            "caller_key": snapshot_key + ":" + str(caller_id),
-                            "callee_name": code_call.name,
-                            "receiver_type": code_call.receiver_type,
-                            "receiver_type_full_name": code_call.receiver_type_full_name,
-                            "argument_count": code_call.argument_count,
-                            "positional_argument_count": code_call.positional_argument_count,
-                            "keyword_argument_names": code_call.keyword_argument_names,
-                            "has_argument_unpacking": code_call.has_argument_unpacking,
-                            "line": code_call.line,
-                        })
-                else:
-                    for callee_name in chunk.called_symbol_names:
-                        calls.append({
-                            "caller_id": str(caller_id),
-                            "caller_key": snapshot_key + ":" + str(caller_id),
-                            "callee_name": callee_name,
-                            "receiver_type": None,
-                            "receiver_type_full_name": None,
-                            "argument_count": None,
-                            "positional_argument_count": None,
-                            "keyword_argument_names": [],
-                            "has_argument_unpacking": False,
-                            "line": chunk.start_line,
-                        })
             if (
                 chunk.chunk_type in {"class", "interface", "enum", "annotation", "record"}
                 and len(chunk.symbol_names) == 1
             ):
-                type_full_name = chunk.symbol_names[0]
                 child_symbol_id = chunk.symbol_ids[0]
                 for supertype_full_name in chunk.supertype_full_names:
                     relation_name = (
@@ -210,67 +181,124 @@ class CodeGraphStore:
                                   files=list(files.values()), symbols=list(symbols.values()), database_="neo4j")
         self._save_type_relations(snapshot_key, files, type_relations)
         self._save_override_relations(snapshot_key, override_relations)
-        if calls:
-            # 同一调用者可在多个位置调用同一目标，必须分别保存调用记录。
-            # 编号只在本批次内使用；同一调用的多个目标候选共享此编号。
-            self.driver.execute_query("""
-            UNWIND range(0, size($calls) - 1) AS call_index
-            WITH $calls[call_index] AS call, call_index
-            MATCH (caller:CodeSymbol {key: call.caller_key})
-            MATCH (callee:CodeSymbol {short_name: call.callee_name})
-            WHERE callee.key STARTS WITH $snapshot_key + ':'
-              AND ((call.receiver_type_full_name IS NOT NULL
-                    AND (callee.owner_full_name = call.receiver_type_full_name
-                         OR (EXISTS {
-                            MATCH (receiverType:CodeSymbol {name: call.receiver_type_full_name})
-                                  -[:EXTENDS|IMPLEMENTS*1..]->(ancestorType:CodeSymbol)
-                            WHERE receiverType.key STARTS WITH $snapshot_key + ':'
-                              AND receiverType.name = call.receiver_type_full_name
-                              AND ancestorType.name = callee.owner_full_name
-                         }
-                         AND NOT EXISTS {
-                            MATCH (concreteMethod:CodeSymbol)
-                            WHERE concreteMethod.key STARTS WITH $snapshot_key + ':'
-                              AND concreteMethod.owner_full_name = call.receiver_type_full_name
-                              AND concreteMethod.short_name = call.callee_name
-                              AND (call.argument_count IS NULL
-                                   OR concreteMethod.parameter_count IS NULL
-                                   OR (call.argument_count >= coalesce(
-                                           concreteMethod.required_parameter_count,
-                                           concreteMethod.parameter_count)
-                                       AND (concreteMethod.varargs = true
-                                            OR call.argument_count <= concreteMethod.parameter_count)))
-                         })))
-                   OR (call.receiver_type_full_name IS NULL
-                       AND (call.receiver_type IS NULL
-                            OR callee.owner_short_name = call.receiver_type)))
-              AND (call.argument_count IS NULL
-                   OR (callee.python_parameter_count IS NOT NULL
-                       AND (call.has_argument_unpacking = true
-                            OR (call.argument_count >= callee.python_required_parameter_count
-                                AND (callee.python_accepts_extra_arguments = true
-                                     OR call.positional_argument_count <= callee.python_positional_parameter_count)
-                                AND (callee.python_accepts_extra_keywords = true
-                                     OR all(name IN call.keyword_argument_names
-                                            WHERE name IN callee.python_keyword_parameter_names))
-                                AND all(name IN callee.python_required_keyword_only_parameters
-                                        WHERE name IN call.keyword_argument_names)
-                                AND (callee.python_accepts_extra_keywords = true
-                                     OR call.argument_count <= callee.python_parameter_count))))
-                   OR (callee.python_parameter_count IS NULL
-                       AND (callee.parameter_count IS NULL
-                            OR (call.argument_count >= coalesce(
-                                    callee.required_parameter_count,
-                                    callee.parameter_count)
-                                AND (callee.varargs = true
-                                     OR call.argument_count <= callee.parameter_count)))))
-            MERGE (caller)-[relation:CALLS {call_index: call_index}]->(callee)
-            ON CREATE SET relation.receiver_type = call.receiver_type,
-                          relation.receiver_type_full_name = call.receiver_type_full_name,
-                          relation.argument_count = call.argument_count,
-                          relation.line = call.line
-            """, snapshot_key=snapshot_key, calls=calls, database_="neo4j")
+        self._save_java_spring_model(snapshot_key, java_spring_model or {})
+        resolved_calls = _resolve_joern_call_sites(snapshot_key, chunks, symbols, call_sites or [])
+        for offset in range(0, len(resolved_calls), batch_size):
+            batch = resolved_calls[offset:offset + batch_size]
+            self._save_call_site_batch(batch)
+            if progress is not None:
+                progress(f"写入Neo4j调用关系 {min(offset + batch_size, len(resolved_calls))}/{len(resolved_calls)}")
         return {"files": len(files), "symbols": len(symbols)}
+
+    def _save_java_spring_model(self, snapshot_key, model):
+        beans = model.get("beans", [])
+        if beans:
+            self.driver.execute_query("""
+            UNWIND $beans AS bean
+            MATCH (symbol:CodeSymbol {key: $snapshot_key + ':' + bean.symbol_id})
+            SET symbol:SpringBean, symbol.bean_name = bean.bean_name,
+                symbol.spring_stereotype = bean.stereotype,
+                symbol.spring_primary = bean.primary,
+                symbol.spring_qualifiers = bean.qualifiers,
+                symbol.spring_conditional = bean.conditional
+            """, snapshot_key=snapshot_key, beans=beans, database_="neo4j")
+        injections = model.get("injections", [])
+        if injections:
+            self.driver.execute_query("""
+            UNWIND $injections AS injection
+            MATCH (point:CodeSymbol {key: $snapshot_key + ':' + injection.injection_point_symbol_id})
+            SET point.spring_injection_status = injection.status,
+                point.spring_requested_type = injection.requested_type,
+                point.spring_qualifier = injection.qualifier
+            WITH point, injection
+            UNWIND injection.bean_symbol_ids AS bean_id
+            MATCH (bean:CodeSymbol {key: $snapshot_key + ':' + bean_id})
+            MERGE (point)-[edge:INJECTS_CANDIDATE {
+                point_kind: injection.point_kind,
+                parameter_index: injection.parameter_index}]->(bean)
+            SET edge.resolution_status = injection.status,
+                edge.resolution_strategy = 'SPRING_STATIC_MODEL',
+                edge.parameter_name = injection.parameter_name
+            """, snapshot_key=snapshot_key, injections=injections, database_="neo4j")
+            assignments = [item for item in injections if item.get("assigned_field_symbol_id")]
+            if assignments:
+                self.driver.execute_query("""
+                UNWIND $injections AS injection
+                MATCH (point:CodeSymbol {key: $snapshot_key + ':' + injection.injection_point_symbol_id})
+                MATCH (field:CodeSymbol {key: $snapshot_key + ':' + injection.assigned_field_symbol_id})
+                MERGE (point)-[edge:ASSIGNS_INJECTED_FIELD {
+                    parameter_index: injection.parameter_index}]->(field)
+                SET edge.parameter_name = injection.parameter_name,
+                    edge.resolution_strategy = 'SPRING_STATIC_MODEL'
+                """, snapshot_key=snapshot_key, injections=assignments, database_="neo4j")
+        entries = model.get("entries", [])
+        if entries:
+            self.driver.execute_query("""
+            UNWIND range(0, size($entries) - 1) AS entry_index
+            WITH $entries[entry_index] AS entry, entry_index
+            MATCH (snapshot:CodeSnapshot {key: $snapshot_key})
+            MATCH (method:CodeSymbol {key: $snapshot_key + ':' + entry.symbol_id})
+            CREATE (frameworkEntry:FrameworkEntry {
+                key: $snapshot_key + ':framework-entry:' + toString(entry_index),
+                kind: entry.kind, marker: entry.marker, value: entry.value,
+                path: entry.path, line: entry.line, resolution_strategy: 'SPRING_STATIC_MODEL'})
+            CREATE (snapshot)-[:HAS_FRAMEWORK_ENTRY]->(frameworkEntry)
+            CREATE (frameworkEntry)-[:INVOKES]->(method)
+            """, snapshot_key=snapshot_key, entries=entries, database_="neo4j")
+        reflections = model.get("reflections", [])
+        if reflections:
+            reflections = [dict(call, key=f"{snapshot_key}:reflection:{index}")
+                           for index, call in enumerate(reflections)]
+            self.driver.execute_query("""
+            UNWIND $calls AS call
+            MATCH (caller:CodeSymbol {key: $snapshot_key + ':' + call.caller_symbol_id})
+            CREATE (site:CallSite {
+                key: call.key,
+                name: call.method_name, path: call.path, line: call.line,
+                resolution_status: call.status, unresolved_reason: call.reason,
+                resolution_strategy: 'REFLECTION_CONSTANT', provenance: 'TREE_SITTER'})
+            CREATE (caller)-[:HAS_CALLSITE]->(site)
+            """, snapshot_key=snapshot_key, calls=reflections, database_="neo4j")
+            resolved = [call for call in reflections if call["callee_symbol_ids"]]
+            if resolved:
+                self.driver.execute_query("""
+                UNWIND $calls AS call
+                MATCH (caller:CodeSymbol {key: $snapshot_key + ':' + call.caller_symbol_id})
+                MATCH (site:CallSite {key: call.key})
+                UNWIND call.callee_symbol_ids AS callee_id
+                MATCH (callee:CodeSymbol {key: $snapshot_key + ':' + callee_id})
+                CREATE (site)-[:RESOLVES_TO]->(callee)
+                MERGE (caller)-[edge:CALLS {callsite_key: site.key}]->(callee)
+                ON CREATE SET edge.line = call.line,
+                              edge.resolution_strategy = 'REFLECTION_CONSTANT'
+                """, snapshot_key=snapshot_key, calls=resolved, database_="neo4j")
+
+    def _save_call_site_batch(self, calls):
+        self.driver.execute_query("""
+        UNWIND $calls AS call
+        MATCH (caller:CodeSymbol {key: call.caller_key})
+        CREATE (site:CallSite {key: call.key, name: call.name, path: call.path,
+            line: call.line, column: call.column, code: call.code,
+            method_full_name: call.callee_full_name, signature: call.signature,
+            dispatch_type: call.dispatch_type, resolution_status: call.resolution_status,
+            unresolved_reason: call.unresolved_reason,
+            resolution_strategy: call.resolution_strategy, provenance: call.provenance})
+        CREATE (caller)-[:HAS_CALLSITE]->(site)
+        """, calls=calls, database_="neo4j")
+        resolved = [call for call in calls if call["callee_keys"]]
+        if resolved:
+            self.driver.execute_query("""
+            UNWIND $calls AS call
+            UNWIND call.callee_keys AS callee_key
+            MATCH (caller:CodeSymbol {key: call.caller_key})
+            MATCH (site:CallSite {key: call.key})
+            MATCH (callee:CodeSymbol {key: callee_key})
+            CREATE (site)-[:RESOLVES_TO]->(callee)
+            MERGE (caller)-[edge:CALLS {callsite_key: call.key}]->(callee)
+            ON CREATE SET edge.line = call.line,
+                          edge.resolution_strategy = call.resolution_strategy,
+                          edge.provenance = call.provenance
+            """, calls=resolved, database_="neo4j")
 
     def _save_type_relations(self, snapshot_key, files, type_relations):
         if not type_relations:
@@ -318,7 +346,9 @@ class CodeGraphStore:
                               index_run_id: $index_run_id})
         OPTIONAL MATCH (s)-[:CONTAINS]->(f:CodeFile)
         OPTIONAL MATCH (f)-[:DECLARES]->(n:CodeSymbol)
-        DETACH DELETE n, f, s
+        OPTIONAL MATCH (n)-[:HAS_CALLSITE]->(site:CallSite)
+        OPTIONAL MATCH (s)-[:HAS_FRAMEWORK_ENTRY]->(entry:FrameworkEntry)
+        DETACH DELETE site, entry, n, f, s
         """, repository_id=str(repository_id), snapshot_id=str(snapshot_id),
              index_run_id=index_run_id, database_="neo4j")
 
@@ -328,7 +358,9 @@ class CodeGraphStore:
         WHERE s.index_run_id <> $current_index_run_id
         OPTIONAL MATCH (s)-[:CONTAINS]->(f:CodeFile)
         OPTIONAL MATCH (f)-[:DECLARES]->(n:CodeSymbol)
-        DETACH DELETE n, f, s
+        OPTIONAL MATCH (n)-[:HAS_CALLSITE]->(site:CallSite)
+        OPTIONAL MATCH (s)-[:HAS_FRAMEWORK_ENTRY]->(entry:FrameworkEntry)
+        DETACH DELETE site, entry, n, f, s
         """, repository_id=str(repository_id), snapshot_id=str(snapshot_id),
              current_index_run_id=current_index_run_id, database_="neo4j")
 
@@ -350,7 +382,10 @@ class CodeGraphStore:
         rows = []
         for record in records:
             row = dict(record)
-            if row.get("receiver_type_full_name"):
+            if row.get("resolution_strategy") == "JOERN_CPG":
+                row["match_basis"] = "joern_cpg"
+                row["match_note"] = "目标由Joern CPG解析，并已映射到当前源码快照的符号。"
+            elif row.get("receiver_type_full_name"):
                 row["match_basis"] = "full_receiver_type"
                 row["match_note"] = "按已保存的完整接收者类型匹配，仍需读取源码核实类型推断。"
             elif row.get("receiver_type"):
@@ -374,7 +409,8 @@ class CodeGraphStore:
                callerFile.path AS path, relation.line AS line,
                relation.receiver_type AS receiver_type,
                relation.receiver_type_full_name AS receiver_type_full_name,
-               relation.argument_count AS argument_count
+               relation.argument_count AS argument_count,
+               relation.resolution_strategy AS resolution_strategy
         ORDER BY path, line LIMIT $limit
         """, repository_id=str(repository_id), snapshot_id=str(snapshot_id),
              index_run_id=index_run_id, name=name, limit=limit, database_="neo4j")
@@ -395,7 +431,8 @@ class CodeGraphStore:
                callee.start_line AS line, relation.line AS call_line,
                relation.receiver_type AS receiver_type,
                relation.receiver_type_full_name AS receiver_type_full_name,
-               relation.argument_count AS argument_count
+               relation.argument_count AS argument_count,
+               relation.resolution_strategy AS resolution_strategy
         ORDER BY path, line LIMIT $limit
         """, repository_id=str(repository_id), snapshot_id=str(snapshot_id),
              index_run_id=index_run_id, name=name, limit=limit, database_="neo4j")
@@ -562,3 +599,128 @@ def _count_java_parameters(parameter_text: str) -> int:
         elif character == "," and angle_depth == 0 and square_depth == 0:
             count += 1
     return count
+
+
+def _resolve_joern_call_sites(snapshot_key, chunks, symbols, joern_calls):
+    """以Joern目标为准，并用Tree-sitter调用点核对/补漏。"""
+    symbol_keys = {symbol_id: snapshot_key + ":" + symbol_id for symbol_id in symbols}
+    chunks_with_callers = []
+    tree_calls = []
+    for chunk in chunks:
+        caller_id = str(chunk.symbol_id) if chunk.symbol_id is not None else None
+        if caller_id is None and len(chunk.symbol_ids) == 1:
+            caller_id = str(chunk.symbol_ids[0])
+        if caller_id is None or caller_id not in symbol_keys:
+            continue
+        chunks_with_callers.append((chunk, caller_id))
+        if chunk.code_calls:
+            for call in chunk.code_calls:
+                tree_calls.append({
+                    "caller_id": caller_id, "path": _normal_path(chunk.relative_path),
+                    "line": call.line, "name": call.name, "matched": False,
+                })
+        else:
+            for name in chunk.called_symbol_names:
+                tree_calls.append({
+                    "caller_id": caller_id, "path": _normal_path(chunk.relative_path),
+                    "line": chunk.start_line, "name": name, "matched": False,
+                })
+
+    callers_by_filename = {}
+    for chunk, caller_id in chunks_with_callers:
+        if chunk.chunk_type not in {"method", "function", "annotation_element"}:
+            continue
+        filename = PurePosixPath(_normal_path(chunk.relative_path)).name
+        callers_by_filename.setdefault(filename, []).append((chunk, caller_id))
+    tree_calls_by_key = {}
+    for call in tree_calls:
+        tree_calls_by_key.setdefault(
+            (call["caller_id"], call["line"], call["name"]), []
+        ).append(call)
+    callees_by_base = {}
+    for symbol_id, symbol in symbols.items():
+        if symbol["type"] in {"method", "function", "annotation_element"}:
+            callees_by_base.setdefault(symbol["name"].split("(", 1)[0], []).append(symbol_id)
+
+    result = []
+    for call in joern_calls:
+        caller_id = _find_caller_id(call, callers_by_filename)
+        if caller_id is None:
+            continue
+        matches = tree_calls_by_key.get(
+            (caller_id, call.get("line", 0), call.get("name", "")), []
+        )
+        tree_match = next((candidate for candidate in matches if not candidate["matched"]), None)
+        if tree_match is not None:
+            tree_match["matched"] = True
+        callee_ids = _find_callee_ids(call, callees_by_base)
+        status = "RESOLVED" if len(callee_ids) == 1 else "UNRESOLVED"
+        reason = None
+        if not callee_ids:
+            reason = "JOERN_TARGET_NOT_IN_SNAPSHOT"
+        elif len(callee_ids) > 1:
+            status, reason = "AMBIGUOUS", "MULTIPLE_SYMBOL_MATCHES"
+            callee_ids = []
+        result.append(_call_site_record(
+            snapshot_key, len(result), call, caller_id, callee_ids, status, reason,
+            "BOTH" if tree_match is not None else "JOERN",
+        ))
+
+    for tree_call in tree_calls:
+        if tree_call["matched"]:
+            continue
+        result.append(_call_site_record(
+            snapshot_key, len(result), {
+                **tree_call, "column": 0, "code": "", "callee_full_name": "",
+                "signature": "", "dispatch_type": "UNKNOWN",
+            }, tree_call["caller_id"], [], "UNRESOLVED",
+            "MISSING_FROM_JOERN", "TREE_SITTER",
+        ))
+    return result
+
+
+def _call_site_record(snapshot_key, number, call, caller_id, callee_ids,
+                      status, reason, provenance):
+    return {
+        "key": f"{snapshot_key}:callsite:{number}",
+        "caller_key": f"{snapshot_key}:{caller_id}",
+        "callee_keys": [f"{snapshot_key}:{value}" for value in callee_ids],
+        "name": call.get("name", ""), "path": _normal_path(call.get("path", "")),
+        "line": call.get("line", 0), "column": call.get("column", 0),
+        "code": call.get("code", ""),
+        "callee_full_name": call.get("callee_full_name", ""),
+        "signature": call.get("signature", ""),
+        "dispatch_type": call.get("dispatch_type", ""),
+        "resolution_status": status, "unresolved_reason": reason,
+        "resolution_strategy": "JOERN_CPG" if provenance != "TREE_SITTER" else "NONE",
+        "provenance": provenance,
+    }
+
+
+def _find_caller_id(call, callers_by_filename):
+    path = _normal_path(call.get("path", ""))
+    line = call.get("line", 0)
+    filename = PurePosixPath(path).name
+    candidates = [
+        (chunk.end_line - chunk.start_line, caller_id)
+        for chunk, caller_id in callers_by_filename.get(filename, [])
+        if _same_path(path, chunk.relative_path) and chunk.start_line <= line <= chunk.end_line
+    ]
+    return min(candidates)[1] if candidates else None
+
+
+def _find_callee_ids(call, callees_by_base):
+    full_name = call.get("callee_full_name", "")
+    if not full_name or "<unresolved" in full_name.lower():
+        return []
+    target = full_name.split(":", 1)[0]
+    return list(callees_by_base.get(target, []))
+
+
+def _normal_path(path):
+    return str(PurePosixPath(str(path).replace("\\", "/")))
+
+
+def _same_path(left, right):
+    left, right = _normal_path(left), _normal_path(right)
+    return left == right or left.endswith("/" + right)

@@ -29,4 +29,5 @@ docs/*
 !docs/audit-implementation-status.md
 !docs/audit-handoff-2026-09-04.md
 !docs/audit-agent.md
+!docs/audit-scan-modes-design.md
 gpu-wheels

@@ -4,7 +4,13 @@ from unittest.mock import MagicMock
 
 from secval.infrastructure.neo4j import CodeGraphStore
 from secval.models.code import CodeCall, CodeChunk
-from secval.models.identifiers import ChunkId, FileId, RepositoryId, SnapshotId, SymbolId
+from secval.models.identifiers import (
+    ChunkId,
+    FileId,
+    RepositoryId,
+    SnapshotId,
+    SymbolId,
+)
 
 
 def test_both_call_directions_explain_unknown_and_short_type_matches():
@@ -62,7 +68,7 @@ def test_find_symbol_is_bound_to_repository_snapshot_and_run():
     assert "snapshot_id_id" not in arguments
 
 
-def test_call_edges_are_written_from_chunk_references():
+def test_joern_call_edges_are_key_resolved_and_tree_sitter_verified():
     driver = MagicMock()
     store = CodeGraphStore(driver)
     caller = CodeChunk(
@@ -77,35 +83,25 @@ def test_call_edges_are_written_from_chunk_references():
         symbol_id=SymbolId("symbol-run"), symbol_names=["App.OrderService.run"],
     )
 
-    store.save_snapshot("repo", "snap", "run-1", [caller, callee])
+    store.save_snapshot("repo", "snap", "run-1", [caller, callee], call_sites=[{
+        "caller_full_name": "App.OrderController.submit:void()",
+        "callee_full_name": "App.OrderService.run:void()", "name": "run",
+        "path": "/joern-inputs/run/src/OrderController.java", "line": 3,
+        "column": 10, "dispatch_type": "STATIC_DISPATCH", "signature": "void()",
+        "code": "service.run()",
+    }])
 
-    second_call = driver.execute_query.call_args_list[1]
-    assert "MERGE (caller)-[relation:CALLS {call_index: call_index}]->(callee)" in second_call.args[0]
-    assert second_call.kwargs["calls"] == [
-        {"caller_id": "symbol-caller", "caller_key": "repo:snap:run-1:symbol-caller", "callee_name": "run",
-         "receiver_type": None, "receiver_type_full_name": None,
-         "argument_count": None, "positional_argument_count": None,
-         "keyword_argument_names": [], "has_argument_unpacking": False,
-         "line": 3},
-        {"caller_id": "symbol-caller", "caller_key": "repo:snap:run-1:symbol-caller", "callee_name": "log",
-         "receiver_type": None, "receiver_type_full_name": None,
-         "argument_count": None, "positional_argument_count": None,
-         "keyword_argument_names": [], "has_argument_unpacking": False,
-         "line": 3},
-    ]
-    assert "callee.short_name = call.callee_name" not in second_call.args[0]
-    assert "MATCH (callee:CodeSymbol {short_name: call.callee_name})" in second_call.args[0]
-    assert "callee.key STARTS WITH" in second_call.args[0]
-    assert "callee.owner_short_name = call.receiver_type" in second_call.args[0]
-    assert "callee.owner_full_name = call.receiver_type_full_name" in second_call.args[0]
-    assert "-[:EXTENDS|IMPLEMENTS*1..]->(ancestorType:CodeSymbol)" in second_call.args[0]
-    assert "NOT EXISTS" in second_call.args[0]
-    assert "concreteMethod.owner_full_name = call.receiver_type_full_name" in second_call.args[0]
-    assert "call.argument_count >= coalesce(" in second_call.args[0]
-    assert "call.argument_count <= callee.parameter_count" in second_call.args[0]
+    callsite = driver.execute_query.call_args_list[1].kwargs["calls"][0]
+    assert callsite["caller_key"] == "repo:snap:run-1:symbol-caller"
+    assert callsite["callee_keys"] == ["repo:snap:run-1:symbol-run"]
+    assert callsite["resolution_status"] == "RESOLVED"
+    assert callsite["provenance"] == "BOTH"
+    edge_query = driver.execute_query.call_args_list[2].args[0]
+    assert "MATCH (callee:CodeSymbol {key: callee_key})" in edge_query
+    assert "short_name" not in edge_query
 
 
-def test_call_edges_include_receiver_type_argument_count_and_line():
+def test_tree_sitter_only_call_is_preserved_without_guessing_a_target():
     driver = MagicMock()
     chunk = CodeChunk(
         ChunkId("chunk-typed"), FileId("file-1"), RepositoryId("repo"), SnapshotId("snap"),
@@ -116,13 +112,12 @@ def test_call_edges_include_receiver_type_argument_count_and_line():
 
     CodeGraphStore(driver).save_snapshot("repo", "snap", "run-1", [chunk])
 
-    assert driver.execute_query.call_args_list[1].kwargs["calls"] == [{
-        "caller_id": "caller-id", "caller_key": "repo:snap:run-1:caller-id", "callee_name": "run",
-        "receiver_type": "OrderService", "receiver_type_full_name": None,
-        "argument_count": 1, "positional_argument_count": None,
-        "keyword_argument_names": [], "has_argument_unpacking": False,
-        "line": 6,
-    }]
+    call = driver.execute_query.call_args_list[1].kwargs["calls"][0]
+    assert call["caller_key"] == "repo:snap:run-1:caller-id"
+    assert call["callee_keys"] == []
+    assert call["resolution_status"] == "UNRESOLVED"
+    assert call["unresolved_reason"] == "MISSING_FROM_JOERN"
+    assert call["provenance"] == "TREE_SITTER"
 
 
 def test_java_generic_commas_do_not_increase_parameter_count():
@@ -158,10 +153,7 @@ def test_varargs_methods_accept_multiple_call_arguments():
     symbols_query = driver.execute_query.call_args_list[0]
     assert symbols_query.kwargs["symbols"][0]["varargs"] is True
     assert symbols_query.kwargs["symbols"][1]["varargs"] is False
-    calls_query = driver.execute_query.call_args_list[1]
-    assert "callee.varargs = true" in calls_query.args[0]
     assert symbols_query.kwargs["symbols"][0]["required_parameter_count"] == 0
-    assert "call.argument_count >= coalesce(" in calls_query.args[0]
 
 
 def test_python_default_parameters_allow_shorter_calls():
@@ -193,12 +185,6 @@ def test_python_default_parameters_allow_shorter_calls():
     assert props["log"]["python_parameter_count"] == 2
     assert props["log"]["python_required_parameter_count"] == 1
     assert props["other.log"]["has_default_parameters"] is False
-    calls_query = driver.execute_query.call_args_list[1].args[0]
-    assert "call.argument_count >= callee.python_required_parameter_count" in calls_query
-    assert "callee.python_parameter_count IS NULL" in calls_query
-    assert "call.positional_argument_count <= callee.python_positional_parameter_count" in calls_query
-    assert "name IN callee.python_keyword_parameter_names" in calls_query
-    assert "name IN callee.python_required_keyword_only_parameters" in calls_query
 
 
 def test_type_relations_are_written_from_resolved_supertypes():

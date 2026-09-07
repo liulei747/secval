@@ -52,7 +52,7 @@ def test_find_code_callers_uses_bound_run_and_filters_scope():
 
     assert result["rows"] == [{"caller": "App.Controller.submit", "path": "src/Controller.java", "line": 3}]
     graph_store.find_callers.assert_called_once_with("repo", "snap", "run-1", "run", 5)
-    assert "静态引用" in result["relation_note"]
+    assert "Joern" in result["relation_note"]
 
 
 def test_find_code_callees_filters_both_ends_to_the_allowed_scope():

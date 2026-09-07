@@ -8,6 +8,9 @@ from opensearchpy import OpenSearch
 from qdrant_client import QdrantClient
 
 from secval.code_processing.repository_processing import process_repository
+from secval.code_processing.repository_processing.analyze_java_spring import (
+    analyze_java_spring,
+)
 from secval.infrastructure.opensearch.code_index import create_code_index
 from secval.infrastructure.opensearch.delete_old_code_chunks import (
     delete_code_chunks_by_run,
@@ -123,10 +126,7 @@ def index_repository(
         )
         if saved_chunks != len(process_result.chunks) or saved_vectors != len(process_result.chunks):
             raise ValueError("索引写入数量不完整，本批次不能绑定源码快照")
-        if graph_store is not None:
-            _report_progress(progress, "写入Neo4j")
-            graph_store.save_snapshot(repository.repository_id, snapshot.snapshot_id,
-                                      index_run_id, process_result.chunks)
+        joern_call_sites = []
         if joern_client is not None:
             _report_progress(progress, "生成Joern路径图")
             if source_store is None or source_snapshot_id is None:
@@ -137,6 +137,16 @@ def index_repository(
                     source_snapshot_id, joern_shared_root, language
                 ) as directory:
                     joern_client.import_code(directory, index_run_id, language)
+            _report_progress(progress, "导出Joern调用关系")
+            joern_call_sites = joern_client.export_call_sites(index_run_id)
+        if graph_store is not None:
+            _report_progress(progress, "写入Neo4j基础节点和调用关系")
+            java_spring_model = analyze_java_spring(process_result.chunks)
+            graph_store.save_snapshot(
+                repository.repository_id, snapshot.snapshot_id, index_run_id,
+                process_result.chunks, call_sites=joern_call_sites,
+                java_spring_model=java_spring_model, progress=progress,
+            )
         if source_store is not None and source_snapshot_id is not None:
             _report_progress(progress, "绑定新索引与源码")
             source_store.bind(source_snapshot_id, repository.repository_id,

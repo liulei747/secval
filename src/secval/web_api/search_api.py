@@ -485,7 +485,7 @@ def create_search_app(
             rows=rows,
             index_run_id=graph_request.index_run_id,
             relation_note=(
-                "CALLS来自Tree-sitter；可确认时按接收者类型和参数个数缩小候选，请读取源码核实"
+                "CALLS由Joern解析并经Tree-sitter调用点核对；运行时动态分派仍需读取源码核实"
             ),
         )
 
@@ -514,7 +514,7 @@ def create_search_app(
             rows=rows,
             index_run_id=graph_request.index_run_id,
             relation_note=(
-                "CALLS来自Tree-sitter；可确认时按接收者类型和参数个数缩小候选，请读取源码核实"
+                "CALLS由Joern解析并经Tree-sitter调用点核对；运行时动态分派仍需读取源码核实"
             ),
         )
 
