@@ -107,18 +107,38 @@ def parse_work_result(raw, evidence):
                     "stored_xss": "xss", "reflected_xss": "xss", "jwt_bypass": "jwt_verification_bypass",
                     "file_write": "arbitrary_file_write", "config": "security_misconfiguration",
                     "sqli_order_by": "sql_injection", "sqli_where": "sql_injection",
-                    "sqli_limit": "sql_injection", "sqli": "sql_injection"}
+                    "sqli_limit": "sql_injection", "sqli": "sql_injection",
+                    "information_disclosure": "sensitive_data_exposure",
+                    "privilege_escalation": "function_level_authorization",
+                    "spel_injection": "expression_injection", "ssti": "template_injection"}
+    surface_by_type = {
+        "auth_bypass": "authentication", "session_flaw": "authentication",
+        "jwt_verification_bypass": "authentication",
+        "object_level_authorization": "authorization",
+        "function_level_authorization": "authorization", "tenant_isolation": "authorization",
+        "path_traversal": "file", "unsafe_upload": "file", "arbitrary_file_write": "file",
+        "command_injection": "command_execution", "unsafe_deserialization": "deserialization",
+        "ssrf": "outbound_request", "sensitive_data_exposure": "data_exposure",
+        "sql_injection": "injection", "template_injection": "injection",
+        "expression_injection": "injection", "xxe": "injection", "xss": "injection",
+        "jndi_injection": "injection", "open_redirect": "outbound_request",
+        "hardcoded_secret": "configuration", "security_misconfiguration": "configuration",
+        "message_trust": "trust_boundary", "unknown": "other",
+    }
     for sketch in sketches:
         required = {"surface", "candidate_type", "entry", "source", "hops", "sink", "control",
                     "hypothesis", "needs", "evidence_ids"}
         if not isinstance(sketch, dict) or set(sketch) != required:
             raise ModelOutputError("path_sketch字段不完整")
-        sketch["surface"] = surface_aliases.get(sketch["surface"], sketch["surface"])
         sketch["candidate_type"] = type_aliases.get(sketch["candidate_type"], sketch["candidate_type"])
-        if sketch["surface"] not in allowed_surfaces:
-            raise ModelOutputError("path_sketch.surface不合法")
         if sketch["candidate_type"] not in allowed_types:
             raise ModelOutputError("path_sketch.candidate_type不合法")
+        sketch["surface"] = surface_aliases.get(sketch["surface"], sketch["surface"])
+        if sketch["surface"] not in allowed_surfaces:
+            # The controlled candidate type already carries the security surface.
+            # Providers often put a descriptive title in ``surface``; normalize
+            # that redundant field without changing the vulnerability claim.
+            sketch["surface"] = surface_by_type[sketch["candidate_type"]]
         for name in ("entry", "source", "sink", "control", "hypothesis"):
             require_text(sketch[name], name, 500)
         # One-shot probes do not get a format-repair conversation. Normalize only

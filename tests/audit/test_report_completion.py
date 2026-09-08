@@ -54,3 +54,33 @@ def test_closed_report_cannot_be_resumed_as_partial():
     with pytest.raises(ValueError, match="部分报告"):
         service.resume("task", allow_remote_code=True)
     factory.assert_not_called()
+
+
+def test_unfinished_discovery_and_path_queues_block_closure():
+    task = recorded_task()
+    task.update(
+        discovery_packets=[{"id": "entry-1"}, {"id": "sink-1"}],
+        agent_tasks=[{"id": "agent-1", "mode": "prefill_path_probe", "status": "completed"}],
+        path_sketches=[{"id": "path-1", "status": "queued_for_validation"}],
+        validation_packets=[{"id": "validation-1", "status": "queued"}],
+    )
+    result = report_completion(task, {"deferred": [],
+        "files": {"available": True, "remaining": [], "excluded": []}})
+    assert result["state"] == "partial_report"
+    assert any("发现包" in reason for reason in result["pendingReasons"])
+    assert any("路径验证包" in reason for reason in result["pendingReasons"])
+    assert any("路径草稿" in reason for reason in result["pendingReasons"])
+
+
+def test_terminal_path_ledger_does_not_add_queue_reasons():
+    task = recorded_task()
+    task.update(
+        discovery_packets=[{"id": "entry-1"}],
+        agent_tasks=[{"id": "agent-1", "mode": "prefill_path_probe", "status": "completed"}],
+        path_sketches=[{"id": "path-1", "status": "refuted"}],
+        validation_packets=[{"id": "validation-1", "status": "completed"}],
+    )
+    result = report_completion(task, {"deferred": [],
+        "files": {"available": True, "remaining": [], "excluded": []}})
+    assert not any("发现包" in reason or "路径验证包" in reason or "路径草稿" in reason
+                   for reason in result["pendingReasons"])

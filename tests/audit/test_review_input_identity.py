@@ -5,6 +5,10 @@ from copy import deepcopy
 
 from secval.services.independent_review import review_packet
 from secval.services.independent_review import review_evidence_matches
+from secval.services.independent_review import _prefetch_candidate_dependencies
+from secval.models.investigation_review import InvestigationReview
+from secval.models.audit_contracts import ModelOutputError
+import pytest
 from copy import deepcopy as _deepcopy
 from tests.audit.test_service_flow import candidate_detail
 from tests.audit.test_agent_team import demo_row
@@ -59,6 +63,36 @@ def test_review_tracks_additional_evidence_and_rejects_changes():
     changed["read-2"]["relative_path"] = "Other.java"
     assert not review_evidence_matches(review, changed)
     assert not review_evidence_matches({}, evidence)
+
+
+def test_candidate_review_prefetches_imported_repository_types():
+    tools = MagicMock()
+    tools.call.side_effect = [
+        {"items": [
+            {"tool": "find_symbol", "result": {"rows": []}},
+            {"tool": "search_source",
+             "result": {"rows": [{"path": "SafeOrderService.java"}]}},
+        ]},
+        {"items": [{"tool": "read_file",
+                    "result": {"rows": [demo_row("SafeOrderService.java")]}}]},
+    ]
+    original = demo_row()
+    original["content"] = "import com.example.SafeOrderService;\nclass Controller {}"
+    selected = {"read-1": original}
+    assert _prefetch_candidate_dependencies(tools, selected) == 1
+    assert "read-2" in selected
+    assert tools.call.call_count == 2
+
+
+def test_review_contract_rejects_process_placeholder():
+    evidence = {"read-1": demo_row()}
+    with pytest.raises(ModelOutputError, match="过程性占位"):
+        InvestigationReview.parse({
+            "investigation_id": "i", "outcome": "inconclusive",
+            "assessment": "正在收集证据，稍后提交正式结论。",
+            "counterevidence": "尚未形成反证", "limitations": ["正式提交时替换"],
+            "evidence_ids": ["read-1"],
+        }, [{"id": "i"}], evidence)
 
 
 def test_review_with_additional_evidence_is_reused_after_restore():

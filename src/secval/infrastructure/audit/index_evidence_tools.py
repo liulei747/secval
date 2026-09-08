@@ -7,7 +7,7 @@ from secval.infrastructure.opensearch.code_index import CODE_INDEX_NAME
 from secval.infrastructure.audit.framework_entry_finder import find_framework_entries
 from secval.models.audit_scope import (
     in_scope,
-    validate_config_paths,
+    validate_config_paths, is_executable_descriptor,
     validate_scope_paths,
 )
 from secval.models.source_range import source_range, validate_line_range
@@ -545,7 +545,8 @@ class EvidenceTools:
         path = arguments["path"]
         if not in_scope(path, self.scope_paths):
             raise ValueError("文件不在任务授权路径内")
-        if not is_supported_source(path) and path not in self.approved_config_paths:
+        if (not is_supported_source(path) and not is_executable_descriptor(path)
+                and path not in self.approved_config_paths):
             raise ValueError("仅允许已支持源码及任务明确批准的配置文件正文")
         content = self.source_store.read(source_id, path)
         offset, end, line_mode = source_range(content, arguments)
@@ -574,7 +575,8 @@ class EvidenceTools:
         matched = 0
         for path, digest, content in self.source_store.iter_captured_files(source_id):
             if (not in_scope(path, self.scope_paths)
-                or (not is_supported_source(path) and path not in self.approved_config_paths)):
+                or (not is_supported_source(path) and not is_executable_descriptor(path)
+                    and path not in self.approved_config_paths)):
                 continue
             position = content.find(text)
             if position < 0:

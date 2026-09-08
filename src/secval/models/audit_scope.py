@@ -16,6 +16,13 @@ def in_scope(path, paths):
     return not paths or any(path == prefix or path.startswith(prefix + "/") for prefix in paths)
 
 
+def is_executable_descriptor(path):
+    """Descriptors that are executable program behavior, rather than secrets/config input."""
+    normalized = path.replace("\\", "/").lower()
+    name = normalized.rsplit("/", 1)[-1]
+    return normalized.endswith(".xml") and ("/mapper/" in normalized or name.endswith("mapper.xml"))
+
+
 def validate_config_paths(paths, scope_paths):
     paths = validate_scope_paths(paths)
     for path in paths:

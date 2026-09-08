@@ -366,17 +366,24 @@ def _run_task(store, task_id, model, tools, team=None):
                     # validated candidate. Retry once with a fresh model/context;
                     # both attempts remain visible and consume the shared budget.
                     for attempt in range(2):
+                        review_tools = TeamReviewTools(team)
+                        tool_events = []
+
+                        def buffer_tool(action, result):
+                            tool_events.append((action, result))
+
                         review_model = TeamModel(team, team.model_factory(),
                                                  "review:" + candidate["id"] + f":{attempt + 1}")
                         try:
                             validation = review_packet(
-                                review_model, candidate, boundary, evidence, tools=None,
+                                review_model, candidate, boundary, evidence, tools=review_tools,
                                 cancelled=lambda: store.get(task_id)["status"] == "cancelled",
+                                on_tool=buffer_tool,
                                 user_context={**user_context, "scope": task.get("scope")}, detail=detail,
                                 previous_reviews=task.get("previous_independent_reviews", []),
                             )
                             validation["attempts"] = attempt + 1
-                            return validation, {}, []
+                            return validation, review_tools.evidence, tool_events
                         except (ModelOutputError, ModelRequestError, ValueError) as error:
                             last_error = error
                     raise last_error

@@ -1,0 +1,83 @@
+{
+  "task_id": "6ea9da5f09e9449eacf869f7e31cfeea",
+  "scoring": "formal independently-supported findings only",
+  "ground_truth": {
+    "code_positives": 30,
+    "config_positives": 5,
+    "total_positives": 35,
+    "safe_controls": 7
+  },
+  "confusion_matrix": {
+    "tp": 5,
+    "fp": 0,
+    "fn": 30,
+    "tn": 7
+  },
+  "metrics": {
+    "precision": 1.0,
+    "recall": 0.142857,
+    "code_recall": 0.166667,
+    "config_recall": 0.0,
+    "specificity": 1.0,
+    "accuracy": 0.285714,
+    "f1": 0.25,
+    "balanced_accuracy": 0.571429
+  },
+  "matched_ids": [
+    "V13",
+    "V14",
+    "V18",
+    "V20",
+    "V24"
+  ],
+  "missed_ids": [
+    "V01",
+    "V02",
+    "V03",
+    "V04",
+    "V05",
+    "V06",
+    "V07",
+    "V08",
+    "V09",
+    "V10",
+    "V11",
+    "V12",
+    "V15",
+    "V16",
+    "V17",
+    "V19",
+    "V21",
+    "V22",
+    "V23",
+    "V25",
+    "V26",
+    "V27",
+    "V28",
+    "V29",
+    "V30",
+    "Cfg01",
+    "Cfg02",
+    "Cfg03",
+    "Cfg04",
+    "Cfg05"
+  ],
+  "safe_control_false_positives": [],
+  "execution": {
+    "index_seconds": 24.16,
+    "audit_seconds": 673.32,
+    "end_to_end_seconds": 697.48,
+    "model_calls": 46,
+    "prompt_tokens": 169504,
+    "completion_tokens": 124044,
+    "total_tokens": 293548,
+    "invalid_outputs": 2,
+    "request_failures": 1,
+    "candidate_details": 8,
+    "independent_reviews": 8,
+    "formal_findings": 5,
+    "tokens_per_formal_finding": 58709.6,
+    "calls_per_formal_finding": 9.2,
+    "audit_seconds_per_formal_finding": 134.66
+  }
+}

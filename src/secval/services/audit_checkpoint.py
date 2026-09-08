@@ -36,3 +36,26 @@ def restore_checkpoint(parent, scope, inventory):
     if context_size(saved["messages"]) > 95000:
         raise ValueError("检查点上下文接近上限，暂不能直接续跑；需要分范围新建调查")
     return saved
+
+
+def restore_path_checkpoint(parent, scope, inventory):
+    """Resume a durable path ledger without replaying unrelated model dialogue."""
+    previous = parent.get("scope", {})
+    for key in ("repository_id", "snapshot_id", "source_snapshot_id", "index_run_id"):
+        if not previous.get(key) or previous[key] != scope.get(key):
+            raise ValueError("源码快照或索引批次已改变/未绑定，不能混用旧证据续跑")
+    for key in ("scope_paths", "approved_config_paths"):
+        if previous.get(key, []) != scope.get(key, []):
+            raise ValueError("续跑范围或配置授权与检查点不一致")
+    if inventory is None or parent.get("source_inventory") != inventory:
+        raise ValueError("源码清单与检查点不一致，不能续跑")
+    state = {key: deepcopy(parent[key]) for key in STATE_FIELDS if key in parent}
+    return {
+        "version": 1,
+        "phase": "investigation",
+        "messages": [
+            {"role": "system", "content": ""},
+            {"role": "user", "content": parent.get("objective", "继续路径验证")},
+        ],
+        "state": state,
+    }

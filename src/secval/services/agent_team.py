@@ -1,6 +1,8 @@
 """一个审计内的协作调度：独立模型、共享预算、固定取证范围、结果先落盘。"""
 
+import hashlib
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict
@@ -15,6 +17,169 @@ from secval.models.audit_tools import iter_evidence_rows
 from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context
 from secval.services.audit_stages import record_stage
+
+
+def bounded_path_groups(paths, size=3):
+    """Return every path exactly once in stable, bounded discovery groups."""
+    if type(size) is not int or size < 1:
+        raise ValueError("路径分包大小必须是正整数")
+    unique = list(dict.fromkeys(path for path in paths if path))
+    return [unique[offset:offset + size] for offset in range(0, len(unique), size)]
+
+
+def packet_security_signals(evidence):
+    """List deterministic review anchors without asserting vulnerability."""
+    anchors = (
+        "${", "executeQuery", "Runtime.getRuntime().exec", "ProcessBuilder",
+        "Files.readString", "Files.writeString", "HttpClient.send", "getResponseCode",
+        "ObjectInputStream", "XMLDecoder", "DocumentBuilder.parse", "parseExpression",
+        "Template.process", "InitialContext.lookup", "JWT.decode", "ResponseEntity.location",
+        "MediaType.TEXT_HTML", "changeRole", "permitAll", "include-stacktrace",
+        "h2.console.enabled", "management.endpoints.web.exposure", "password", "secret",
+    )
+    found = []
+    for row in evidence.values():
+        content = row.get("content", "")
+        for anchor in anchors:
+            if anchor in content and anchor not in found:
+                found.append(anchor)
+    return found[:20]
+
+
+_SINK_RULES = (
+    ("${", "injection", "sql_injection", "参数化SQL或严格列名白名单"),
+    ("executeQuery", "injection", "sql_injection", "参数化SQL"),
+    ("Runtime.getRuntime().exec", "command_execution", "command_injection", "参数数组和命令白名单"),
+    ("ProcessBuilder", "command_execution", "command_injection", "固定可执行文件和参数白名单"),
+    ("Files.readString", "file_access", "path_traversal", "规范化后目录边界检查"),
+    ("Files.writeString", "file_access", "arbitrary_file_write", "规范化后目录边界检查"),
+    ("httpClient.send", "network", "ssrf", "目标协议和地址白名单"),
+    ("getResponseCode", "network", "ssrf", "目标协议和地址白名单"),
+    ("ObjectInputStream", "deserialization", "unsafe_deserialization", "安全数据格式和类型白名单"),
+    ("XMLDecoder", "deserialization", "unsafe_deserialization", "禁用对象图反序列化"),
+    (".parse(new InputSource", "xml", "xxe", "禁用外部实体和DOCTYPE"),
+    ("parseExpression", "injection", "expression_injection", "固定表达式或受限求值上下文"),
+    ("template.process", "injection", "template_injection", "固定模板和数据模型隔离"),
+    ("InitialContext().lookup", "injection", "jndi_injection", "固定JNDI名称白名单"),
+    ("JWT.decode", "authentication", "jwt_verification_bypass", "验签后再信任声明"),
+    (".location(", "redirect", "open_redirect", "站内目标白名单"),
+    ("MediaType.TEXT_HTML", "response", "xss", "上下文相关HTML编码"),
+    ("changeRole", "authorization", "function_level_authorization", "管理员权限和目标范围校验"),
+    ("management.endpoints.web.exposure", "configuration", "security_misconfiguration", "最小化管理端点暴露"),
+    ("h2.console.enabled", "configuration", "security_misconfiguration", "生产环境关闭数据库控制台"),
+    ("include-stacktrace", "configuration", "security_misconfiguration", "生产响应禁用堆栈信息"),
+    ("password:", "secrets", "hardcoded_secret", "外部秘密存储"),
+    ("client-secret", "secrets", "hardcoded_secret", "外部秘密存储"),
+)
+
+
+def deterministic_sink_sketches(packets):
+    """Create durable candidates for every located dangerous syntax occurrence."""
+    sketches, seen = [], set()
+    for packet in packets:
+        for evidence_id, row in packet.get("evidence", {}).items():
+            content, path = row.get("content", ""), row.get("relative_path", "")
+            for anchor, surface, candidate_type, control in _SINK_RULES:
+                occurrences = [match.start() for match in re.finditer(re.escape(anchor), content)]
+                for position in occurrences:
+                # ${} is a SQL sink only in mapper descriptors, not ordinary config placeholders.
+                    if anchor == "${" and not (path.endswith(".xml") and "mapper" in path.lower()):
+                        continue
+                    before, after = content[:position], content[position:]
+                    if path.endswith(".xml"):
+                        matches = re.findall(r'<(?:select|insert|update|delete)\s+id="([^"]+)"', before)
+                        symbol = matches[-1] if matches else anchor
+                    else:
+                        methods = re.findall(
+                            r"(?:public|protected|private)\s+(?:[\w<>?,.\[\]]+\s+)+([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*(?:throws[^{}]+)?\{",
+                            before,
+                        )
+                        symbol = methods[-1] if methods else anchor
+                        if anchor == "MediaType.TEXT_HTML":
+                            following = re.search(
+                                r"(?:public|protected|private)\s+(?:[\w<>?,.\[\]]+\s+)+([A-Za-z_$][\w$]*)\s*\(",
+                                after,
+                            )
+                            if following:
+                                symbol = following.group(1)
+                    identity = (path, symbol, anchor, candidate_type)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    need = ({"kind": "route_guard", "target": path,
+                         "reason": "确认配置暴露条件和环境覆盖", "required_for": "reachability"}
+                        if surface == "configuration" else
+                        {"kind": "callers", "target": symbol,
+                         "reason": "反向连接危险操作到所有外部入口", "required_for": "source_to_sink"})
+                    digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
+                    sketches.append({
+                    "id": "system:path-" + digest, "source_id": "deterministic_sink_inventory",
+                    "status": "queued_for_validation", "surface": surface,
+                    "candidate_type": candidate_type, "entry": "待由调用者闭包解析的入口",
+                    "source": "外部可控输入候选", "hops": [symbol],
+                    "sink": f"{path} 中的 {anchor}", "control": control,
+                    "hypothesis": f"外部输入可能到达 {anchor} 且缺少{control}",
+                    "needs": [need], "evidence_ids": [evidence_id],
+                    "deterministic_anchor": anchor,
+                    })
+            # Resource identifiers at HTTP boundaries are authorization
+            # candidates even though they do not end in a traditional sink.
+            if path.endswith("Controller.java"):
+                method_pattern = re.compile(
+                    r"@(?:Get|Post|Put|Patch|Delete)Mapping[^\n]*\n\s*"
+                    r"public\s+[^{;]+?\s+([A-Za-z_$][\w$]*)\s*\((.*?)\)\s*(?:throws[^{}]+)?\{",
+                    re.DOTALL,
+                )
+                for method, parameters in method_pattern.findall(content):
+                    identifiers = re.findall(
+                        r"@(?:PathVariable|RequestParam)(?:\([^)]*\))?\s+(?:String|Long|Integer)\s+([A-Za-z_$][\w$]*Id)\b",
+                        parameters,
+                    )
+                    if not identifiers:
+                        continue
+                    anchor = "resource-id:" + ",".join(identifiers)
+                    identity = (path, method, anchor, "object_level_authorization")
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
+                    sketches.append({
+                        "id": "system:path-" + digest, "source_id": "deterministic_sink_inventory",
+                        "status": "queued_for_validation", "surface": "authorization",
+                        "candidate_type": "object_level_authorization", "entry": method,
+                        "source": ", ".join(identifiers), "hops": [method],
+                        "sink": "按请求资源ID读取或修改对象", "control": "对象归属或租户范围校验",
+                        "hypothesis": "请求资源ID可能在没有对象级授权时访问其他主体的数据",
+                        "needs": [{"kind": "callees", "target": method,
+                                   "reason": "确认资源查询及所有权条件", "required_for": "authorization"}],
+                        "evidence_ids": [evidence_id], "deterministic_anchor": anchor,
+                    })
+            if path.endswith((".yml", ".yaml")):
+                yaml_rules = (
+                    (r"(?m)^\s*include:\s*['\"]?\*", "management-exposure-wildcard",
+                     "最小化管理端点暴露"),
+                    (r"(?ms)^\s*h2:\s*\n\s+console:\s*\n\s+enabled:\s*true", "h2-console-enabled",
+                     "生产环境关闭数据库控制台"),
+                )
+                for pattern, anchor, control in yaml_rules:
+                    if not re.search(pattern, content):
+                        continue
+                    identity = (path, anchor, "security_misconfiguration")
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
+                    sketches.append({
+                        "id": "system:path-" + digest, "source_id": "deterministic_sink_inventory",
+                        "status": "queued_for_validation", "surface": "configuration",
+                        "candidate_type": "security_misconfiguration", "entry": path,
+                        "source": "应用配置", "hops": [anchor], "sink": anchor,
+                        "control": control, "hypothesis": f"配置 {anchor} 可能扩大生产攻击面",
+                        "needs": [{"kind": "route_guard", "target": path,
+                                   "reason": "确认环境覆盖和暴露条件", "required_for": "reachability"}],
+                        "evidence_ids": [evidence_id], "deterministic_anchor": anchor,
+                    })
+    return sketches
 
 
 class TeamStopped(RuntimeError):
@@ -51,6 +216,16 @@ class TeamModel:
 
     def next_action(self, messages):
         return self.team.request(self.model, messages, self.role)
+
+    def set_available_read_tools(self, tool_names):
+        configure = getattr(self.model, "set_available_read_tools", None)
+        if configure is not None:
+            configure(tool_names)
+
+    def set_available_action_tools(self, tool_names):
+        configure = getattr(self.model, "set_available_action_tools", None)
+        if configure is not None:
+            configure(tool_names)
 
 
 class TeamReviewTools:
@@ -98,18 +273,26 @@ class AgentTeam:
             return
         record_stage(self.store, self.task_id, "entry_prefetch", "running", name="入口扫描与证据预取")
         try:
-            listing = self.read_tool("list_files", {"offset": 0})
-            self.seed_events.append({"tool": "list_files", "arguments": {"offset": 0},
-                                     "result": listing})
-            rows = [row for row in listing.get("rows", []) if row.get("status") == "captured"]
-            small_complete = listing.get("next_offset") is None and 0 < len(rows) <= 12
+            listings, offset = [], 0
+            while True:
+                listing = self.read_tool("list_files", {"offset": offset})
+                listings.append(listing)
+                self.seed_events.append({"tool": "list_files", "arguments": {"offset": offset},
+                                         "result": listing})
+                next_offset = listing.get("next_offset")
+                if next_offset is None:
+                    break
+                offset = next_offset
+            rows = [row for listing in listings for row in listing.get("rows", [])
+                    if row.get("status") == "captured"]
+            small_complete = 0 < len(rows) <= 12
             selected_rows = rows
             if not small_complete:
                 if "find_entry_points" not in self.task.get("scope", {}).get("tools", []):
                     return
-                entries = self.read_tool("find_entry_points", {"framework": "all", "limit": 50})
+                entries = self.read_tool("find_entry_points", {"framework": "all", "limit": 100})
                 self.seed_events.append({"tool": "find_entry_points",
-                                         "arguments": {"framework": "all", "limit": 50},
+                                         "arguments": {"framework": "all", "limit": 100},
                                          "result": entries})
                 priority = {"security_boundary": 0, "authorization": 1, "route": 2,
                             "message_consumer": 3, "scheduler": 4}
@@ -118,32 +301,84 @@ class AgentTeam:
                                                    item.get("path", ""), item.get("line", 0)))
                 paths = list(dict.fromkeys(item.get("path") for item in ordered if item.get("path")))
                 selected_rows = [{"path": path} for path in paths[:4]]
-                # Keep every discovered entry in bounded packets.  The former
-                # [:4] truncation silently made the rest of a large repository
-                # undiscoverable even though find_entry_points had found it.
-                for offset in range(0, min(len(paths), 12)):
+                entry_inventory = [{"path": path, "status": "queued"} for path in paths]
+                self.store.update(self.task_id, entry_inventory=entry_inventory)
+                # Every discovered entry must enter a bounded packet. Grouping
+                # three files keeps requests compact without imposing a recall
+                # ceiling or consuming one worker slot per controller.
+                for packet_number, group in enumerate(bounded_path_groups(paths), 1):
                     packet = {}
                     packet_total = 0
-                    for path in paths[offset:offset + 1]:
+                    packet_paths = []
+                    for path in group:
                         result = self.read_tool("read_file", {"path": path})
                         incoming = {}
                         self.collect_evidence("read_file", result, incoming)
                         size = sum(len(item.get("content", "")) for item in incoming.values())
-                        if packet_total + size > 6000:
+                        if packet and packet_total + size > 12000:
                             break
                         packet_total += size
                         packet.update(incoming)
+                        packet_paths.append(path)
                     if packet:
-                        self.seed_packets.append({"id": f"entry-{offset + 1}",
+                        self.seed_packets.append({"id": f"entry-{packet_number}",
                                                   "evidence": packet,
-                                                  "paths": paths[offset:offset + 1]})
+                                                  "paths": packet_paths,
+                                                  "kind": "entry",
+                                                  "signals": packet_security_signals(packet)})
+                # Entrypoint annotations do not reveal sinks hidden in services,
+                # mappers, templates or configuration. A deterministic local
+                # catalogue locates those files before any model call. Results
+                # are hypotheses only and still pass through normal validation.
+                sink_terms = (
+                    "executeQuery", "Runtime.getRuntime().exec", "ProcessBuilder",
+                    "Files.readString", "Files.writeString", "httpClient.send",
+                    "getResponseCode", "ObjectInputStream", "XMLDecoder",
+                    ".parse(new InputSource", "parseExpression", "template.process",
+                    "InitialContext().lookup", "JWT.decode", ".location(",
+                    "${", "password", "secret", "permitAll", "allowedOrigins",
+                )
+                sink_paths = []
+                for term in sink_terms:
+                    search_offset = 0
+                    while True:
+                        located = self.read_tool("search_source", {"text": term,
+                                                                   "offset": search_offset})
+                        self.seed_events.append({"tool": "search_source",
+                                                 "arguments": {"text": term,
+                                                               "offset": search_offset},
+                                                 "result": located})
+                        for row in located.get("rows", []):
+                            path = row.get("path") or row.get("relative_path")
+                            if path and path not in paths and path not in sink_paths:
+                                sink_paths.append(path)
+                        next_offset = located.get("next_offset")
+                        if next_offset is None:
+                            break
+                        search_offset = next_offset
+                self.store.update(self.task_id, sink_inventory=[{"path": path, "status": "queued"}
+                                                                 for path in sink_paths])
+                for offset in range(0, len(sink_paths), 2):
+                    packet, packet_paths = {}, []
+                    for path in sink_paths[offset:offset + 2]:
+                        result = self.read_tool("read_file", {"path": path})
+                        incoming = {}
+                        self.collect_evidence("read_file", result, incoming)
+                        packet.update(incoming)
+                        packet_paths.append(path)
+                    if packet:
+                        self.seed_packets.append({"id": f"sink-{offset // 2 + 1}",
+                                                  "evidence": packet, "paths": packet_paths,
+                                                  "kind": "sink",
+                                                  "signals": packet_security_signals(packet)})
                 for number, path in enumerate(self.task.get("approved_config_paths", [])[:4], 1):
                     result = self.read_tool("read_file", {"path": path})
                     packet = {}
                     self.collect_evidence("read_file", result, packet)
                     if packet:
                         self.seed_packets.append({"id": f"config-{number}", "evidence": packet,
-                                                  "paths": [path]})
+                                                  "paths": [path], "kind": "config",
+                                                  "signals": packet_security_signals(packet)})
             total = 0
             for row in selected_rows:
                 result = self.read_tool("read_file", {"path": row["path"]})
@@ -162,7 +397,24 @@ class AgentTeam:
             )
             if small_complete and self.seed_evidence:
                 self.seed_packets = [{"id": "complete", "evidence": deepcopy(self.seed_evidence),
-                                      "paths": [row.get("relative_path") for row in self.seed_evidence.values()]}]
+                                      "paths": [row.get("relative_path") for row in self.seed_evidence.values()],
+                                      "kind": "complete",
+                                      "signals": packet_security_signals(self.seed_evidence)}]
+            anchored_evidence = {
+                evidence_id: row
+                for packet in self.seed_packets
+                for evidence_id, row in packet.get("evidence", {}).items()
+            }
+            deterministic = deterministic_sink_sketches(self.seed_packets)
+            current = self.store.get(self.task_id)
+            existing_sketches = list(current.get("path_sketches", []))
+            known_ids = {row.get("id") for row in existing_sketches}
+            existing_sketches.extend(row for row in deterministic if row["id"] not in known_ids)
+            self.store.update(self.task_id, discovery_packets=[
+                {"id": row["id"], "kind": row.get("kind", "entry"),
+                 "paths": row["paths"], "status": "queued"} for row in self.seed_packets
+            ], evidence={**current.get("evidence", {}), **anchored_evidence},
+                path_sketches=existing_sketches)
             record_stage(
                 self.store, self.task_id, "entry_prefetch", "completed", name="入口扫描与证据预取",
                 completed_units=len(self.seed_evidence), total_units=len(selected_rows),
@@ -216,7 +468,12 @@ class AgentTeam:
         workers = self.store.get(self.task_id).get("agent_tasks", [])
         if workers:
             for worker in workers:
-                if worker["status"] == "completed" and self.task.get("parent_task_id"):
+                if (self.path_pipeline_enabled and worker.get("mode") == "prefill_path_probe"
+                        and worker["status"] == "failed"):
+                    self.update_worker(worker["id"], status="queued", calls=0, stop_reason=None,
+                                       prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
+                    self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
+                elif worker["status"] == "completed" and self.task.get("parent_task_id"):
                     self.update_worker(worker["id"], calls=0, reused_result=True,
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
                 elif (self.task.get("parent_task_id")
@@ -241,6 +498,7 @@ class AgentTeam:
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0),
                                        validation_resume=None)
                     self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
+            self.schedule_path_validations()
             return
         # A large-repository prefill run gets its independent judgement from the
         # per-packet validator. Starting the legacy baseline here recreates the
@@ -258,7 +516,11 @@ class AgentTeam:
                 for packet in packets:
                     self.submit("architecture", {"title": "入口路径预筛 · " + packet["id"], "question":
                         "逐一检查本包全部入口，覆盖认证、授权、文件读写、命令执行、反序列化、注入、出站请求、数据暴露和配置安全面；输出所有可信Source→Hop→Sink路径及明确补证缺口。",
-                        "evidence_ids": []}, mode=mode, evidence=packet["evidence"])
+                        "evidence_ids": [],
+                        "required_signals": packet.get("signals", [])}, mode=mode, evidence=packet["evidence"])
+                # Deterministic sink candidates are durable even if a discovery
+                # model omits the same issue in this run.
+                self.schedule_path_validations()
             else:
                 self.submit("architecture", {"title": "独立架构分析", "question":
                     "确认实际入口、资产、信任边界和控制，追查资源的实际使用者；仅做架构分析，不冒充安全审阅。",
@@ -301,8 +563,9 @@ class AgentTeam:
         with self.lock:
             task = self.store.get(self.task_id)
             workers = task.get("agent_tasks", [])
-            if len(workers) >= 16:
-                raise ValueError("本次最多16个子任务，请合并相关问题")
+            limit = 64 if self.path_pipeline_enabled else 16
+            if len(workers) >= limit:
+                raise ValueError(f"本次最多{limit}个子任务，请合并相关问题")
             for worker in workers:
                 if worker["role"] == role and worker["assignment"] == assignment:
                     return {"worker_id": worker["id"], "status": worker["status"], "existing": True}
@@ -602,10 +865,24 @@ class AgentTeam:
 
     def wait_for_all(self):
         """Wait until discovery and every validation packet reach a terminal state."""
-        while self.pending():
-            self.check_running()
-            self.changed.clear()
-            self.changed.wait(1)
+        while True:
+            while self.pending():
+                self.check_running()
+                self.changed.clear()
+                self.changed.wait(1)
+            task = self.store.get(self.task_id)
+            queued = [row for row in task.get("path_sketches", [])
+                      if row.get("status") == "queued_for_validation"]
+            covered = {path_id for packet in task.get("validation_packets", [])
+                       for path_id in packet.get("path_ids", [])
+                       if packet.get("status") in {"queued", "running"}}
+            missing = [row for row in queued if row["id"] not in covered]
+            if not missing:
+                break
+            from secval.services.path_validation_pipeline import build_validation_packets
+            packets = [*task.get("validation_packets", []), *build_validation_packets(missing)]
+            self.store.update(self.task_id, validation_packets=packets)
+            self.schedule_path_validations()
         return self.progress()
 
     def progress(self):

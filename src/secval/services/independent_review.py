@@ -2,6 +2,7 @@
 
 import json
 import hashlib
+import re
 from copy import deepcopy
 from dataclasses import asdict
 
@@ -43,18 +44,77 @@ def review_evidence_matches(review, evidence):
     return saved == evidence_fingerprints({key: evidence[key] for key in saved})
 
 
+def _prefetch_candidate_dependencies(tools, selected, on_tool=None):
+    """Resolve repository types imported by candidate evidence in two local batches."""
+    names = []
+    for row in selected.values():
+        content = row.get("content", "")
+        for qualified, name in re.findall(
+                r"(?m)^\s*import\s+((?:[A-Za-z_$][\w$]*\.)+([A-Z][\w$]*));", content):
+            if qualified.startswith(("java.", "javax.", "jakarta.", "org.springframework.")):
+                continue
+            if name not in names:
+                names.append(name)
+    if not names:
+        return 0
+    locate_action = ToolAction.parse({"tool": "batch_evidence", "arguments": {"operations": [
+        operation
+        for name in names[:6]
+        for operation in (
+            {"tool": "find_symbol", "arguments": {"text": name, "offset": 0}},
+            {"tool": "search_source", "arguments": {"text": name, "offset": 0}},
+        )
+    ]}})
+    located = tools.call(locate_action.tool, locate_action.arguments)
+    if on_tool is not None:
+        on_tool(locate_action, located)
+    paths = []
+    for item in located.get("items", []):
+        for row in item.get("result", {}).get("rows", []):
+            path = row.get("path") or row.get("relative_path")
+            if path and path not in paths:
+                paths.append(path)
+    existing_paths = {row.get("relative_path") for row in selected.values()}
+    paths = [path for path in paths if path not in existing_paths][:8]
+    if not paths:
+        return 0
+    read_action = ToolAction.parse({"tool": "batch_evidence", "arguments": {"operations": [
+        {"tool": "read_file", "arguments": {"path": path}} for path in paths
+    ]}})
+    result = tools.call(read_action.tool, read_action.arguments)
+    if on_tool is not None:
+        on_tool(read_action, result)
+    scopes = {(row.get("repository_id"), row.get("snapshot_id")) for row in selected.values()}
+    reads = 0
+    for row in iter_evidence_rows("batch_evidence", result):
+        verified = CodeEvidence.from_read(row)
+        if (verified.repository_id, verified.snapshot_id) not in scopes:
+            raise ValueError("复核证据超出原任务范围")
+        if verified.id not in selected:
+            selected[verified.id] = row
+            reads += 1
+    return reads
+
+
 def review_packet(model, investigation, boundary, evidence, *, tools=None,
                   before_request=None, cancelled=None, on_tool=None, user_context=None, detail=None,
                   previous_reviews=None):
     configure_actions = getattr(model, "set_available_action_tools", None)
     if configure_actions is not None:
-        configure_actions(set())
+        configure_actions({"submit_independent_review"})
+    configure_reads = getattr(model, "set_available_read_tools", None)
+    if configure_reads is not None:
+        # Dependencies are collected deterministically below. The reviewer only
+        # adjudicates that closed packet, so it cannot spend calls exploring.
+        configure_reads(set() if detail is not None else set(READ_TOOL_ARGUMENTS))
     refs = list(dict.fromkeys([*boundary["evidence_ids"], *investigation["evidence_ids"],
                               *(investigation.get("reviews") or [{}])[-1].get("evidence_ids", [])]))
     selected = {ref: evidence[ref] for ref in refs}
     if detail is not None:
         for ref in [*detail["rootCause"]["evidenceRefs"], *detail["attackPath"]["evidenceRefs"]]:
             selected[ref] = evidence[ref]
+    reads = (_prefetch_candidate_dependencies(tools, selected, on_tool)
+             if tools is not None and detail is not None else 0)
     # 不发送原模型的结论、反证判断、核查历史和完整对话，降低锚定。
     packet = {"investigation_id": investigation["id"], "question": investigation["question"],
               "entry": boundary["entry"], "asset": boundary["asset"], "evidence": selected}
@@ -71,7 +131,9 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
     if len(payload) > 80000:
         raise ValueError("复核证据包超过上下文上限")
     prompt = PROMPT
-    if tools is not None:
+    if detail is not None:
+        prompt += "\n依赖源码已由系统预取；不得继续调用工具，只提交一次完整复核结论。"
+    elif tools is not None:
         prompt += "\n" + read_tool_prompt()
         prompt += "\n不得调用写操作、边界或调查记录工具。补证仍缺关键前提就返回inconclusive。"
     messages = [{"role": "system", "content": prompt}, {"role": "user", "content": payload}]
@@ -101,8 +163,7 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
             reused = deepcopy(previous)
             reused["reused"] = True
             return reused
-    reads = 0
-    for _ in range(8):
+    for _ in range(2):
         if cancelled is not None and cancelled():
             raise ValueError("复核已取消")
         if sum(len(m["content"]) for m in messages) > 100000:
@@ -130,20 +191,19 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
                         "detail_sha256": detail_digest(detail) if detail is not None else None,
                         "independent_source_exploration": reads > 0,
                         "additional_evidence_reads": reads, "dynamic_validation": False}
-            if tools is None or action.tool not in READ_TOOL_ARGUMENTS:
+            if detail is not None or tools is None or action.tool not in READ_TOOL_ARGUMENTS:
                 raise ValueError("复核工具不允许")
             try:
                 result = tools.call(action.tool, action.arguments)
             except ValueError as error:
                 result = {"error": str(error)}
-            if action.tool in READ_TOOL_ARGUMENTS:
-                for row in iter_evidence_rows(action.tool, result):
-                    verified = CodeEvidence.from_read(row)
-                    scopes = {(item.get("repository_id"), item.get("snapshot_id")) for item in selected.values()}
-                    if (verified.repository_id, verified.snapshot_id) not in scopes:
-                        raise ValueError("复核证据超出原任务范围")
-                    selected[verified.id] = row
-                    reads += 1
+            for row in iter_evidence_rows(action.tool, result):
+                verified = CodeEvidence.from_read(row)
+                scopes = {(item.get("repository_id"), item.get("snapshot_id")) for item in selected.values()}
+                if (verified.repository_id, verified.snapshot_id) not in scopes:
+                    raise ValueError("复核证据超出原任务范围")
+                selected[verified.id] = row
+                reads += 1
             if on_tool is not None:
                 on_tool(action, result)
             messages.extend([{"role": "assistant", "content": json.dumps(response, ensure_ascii=False)},

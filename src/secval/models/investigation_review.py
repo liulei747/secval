@@ -32,6 +32,11 @@ class InvestigationReview:
         placeholders = {"待核查", "占位", "待定", "未知", "todo", "tbd", "placeholder", "n/a"}
         if raw["assessment"].strip().lower() in placeholders or raw["counterevidence"].strip().lower() in placeholders:
             raise ModelOutputError("核查结论和反证必须是具体证据判断，不能使用占位文本")
+        placeholder_phrases = ("正在收集", "稍后提交", "正式提交时", "提交时替换",
+                               "待补充", "待完善", "to be completed")
+        review_text = " ".join([raw["assessment"], raw["counterevidence"], *raw.get("limitations", [])]).lower()
+        if any(phrase in review_text for phrase in placeholder_phrases):
+            raise ModelOutputError("核查记录仍是过程性占位文本，必须完成证据判断后提交")
         if raw["investigation_id"] not in {item["id"] for item in investigations}:
             raise ModelOutputError("只能核查本任务已经登记的调查问题")
         if raw["outcome"] not in {"supported", "refuted", "inconclusive"}:

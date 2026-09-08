@@ -1,0 +1,152 @@
+{
+  "sketch": {
+    "surface": "injection",
+    "candidate_type": "xss",
+    "entry": "GET /api/pages/{pageId}",
+    "source": "客户端可控的@PathVariable pageId",
+    "hops": [
+      "PageController.page 将 pageId 传给 renderPage",
+      "renderPage 读取对应页面内容并渲染",
+      "以 TEXT_HTML 返回渲染结果"
+    ],
+    "sink": "HTML 响应中的存储型 XSS / 模板注入",
+    "control": "存储内容输出编码与 pageId 路径校验，控制器未体现防护",
+    "hypothesis": "renderPage 渲染用户可控页面内容并以 TEXT_HTML 返回，存在存储型 XSS 或模板注入风险。",
+    "needs": [
+      {
+        "kind": "symbol_definition",
+        "target": "PageService.renderPage",
+        "reason": "确认渲染方式及是否进行输出编码",
+        "required_for": "xss"
+      },
+      {
+        "kind": "template_resolution",
+        "target": "renderPage 的渲染流程",
+        "reason": "确认页面内容是否经过转义",
+        "required_for": "xss"
+      }
+    ],
+    "evidence_ids": [
+      "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300:0:1578"
+    ],
+    "id": "agent-3:path-6",
+    "status": "supported",
+    "source_id": "agent-3"
+  },
+  "validation": {
+    "path_id": "agent-3:path-6",
+    "outcome": "supported",
+    "assessment": "renderPage拼接page中TITLE与BODY到HTML返回，无输出编码，存储型XSS成立",
+    "counterevidence": "无",
+    "limitations": [],
+    "evidence_ids": [
+      "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300:0:1578",
+      "file:0577ad1023f5c637dcdfa1a54f5ad51f5779ff5077e02e3d9bb4f31e64c97732:0:1010"
+    ],
+    "packet_id": "validation:0f8724a1fb6ba845"
+  },
+  "detail_id": "detail-5",
+  "investigation": {
+    "boundary_id": "boundary-5",
+    "question": "renderPage 渲染用户可控页面内容并以 TEXT_HTML 返回，存在存储型 XSS 或模板注入风险。",
+    "control_to_check": "存储内容输出编码与 pageId 路径校验，控制器未体现防护",
+    "counterevidence": "无",
+    "next_check": "独立复核证据引用、攻击前提和严重性",
+    "unknowns": [
+      "仅完成静态源码验证，未执行动态利用"
+    ],
+    "evidence_ids": [
+      "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300:0:1578",
+      "file:0577ad1023f5c637dcdfa1a54f5ad51f5779ff5077e02e3d9bb4f31e64c97732:0:1010"
+    ],
+    "baseline_question_ids": [],
+    "id": "investigation-5",
+    "status": "supported",
+    "worker_candidate_id": "agent-3:path-6:finding-1",
+    "reviews": [
+      {
+        "investigation_id": "investigation-5",
+        "outcome": "supported",
+        "assessment": "renderPage拼接page中TITLE与BODY到HTML返回，无输出编码，存储型XSS成立",
+        "counterevidence": "无",
+        "limitations": [
+          "仅完成静态源码验证，未执行动态利用"
+        ],
+        "evidence_ids": [
+          "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300:0:1578",
+          "file:0577ad1023f5c637dcdfa1a54f5ad51f5779ff5077e02e3d9bb4f31e64c97732:0:1010"
+        ],
+        "revision": 1,
+        "step": 0,
+        "method": "worker_static_candidate",
+        "independently_validated": false
+      }
+    ]
+  },
+  "review": {
+    "investigation_id": "investigation-5",
+    "outcome": "inconclusive",
+    "assessment": "由给定源码可确认：PageController 中 GET /{pageId} 以 produces=TEXT_HTML 调用 pageService.renderPage(pageId)，text/html 响应由浏览器按 HTML 渲染；PageService.renderPage 将 pageRepository.findById 返回的 TITLE 与 BODY 直接字符串拼接进 HTML 响应，无任何输出编码，而同一文件 buildSearchText 使用了 HtmlUtils.htmlEscape，说明编码手段存在但 renderPage 未采用——sink 端无防护成立。然而存储型 XSS 的完整链路未被证据包证明：PageRequest DTO 字段（是否含 TITLE/BODY）与 PageRepository 的 save/findById 实现均不在所给证据中，无法独立证明攻击者可控的请求体内容确实被持久化并原样回读；POST/GET 端点是否存在认证或拦截亦无证据。'模板注入'主张与代码不符：renderPage 为普通字符串拼接，未引用任何模板引擎。故 sink 缺陷有依据，但存储内容可控性与完整攻击链缺少决定性证明，判定 inconclusive。",
+    "counterevidence": "无有效防护反证该漏洞假设：renderPage 输出未编码，且 buildSearchText 的 HtmlUtils.htmlEscape 对比恰证明编码能力存在却未用于该路径。阻碍 supported 的是漏洞假设未证明环节：①PageRequest 字段未示出，无法证明 TITLE/BODY 由攻击者请求体控制；②PageRepository.findById/save 实现缺失，存储→回读数据流未证明；③端点认证/授权状态未知，不能排除仅特权用户可写页面；④模板注入无模板引擎依据，与普通拼接代码矛盾。",
+    "limitations": [
+      "证据包不含 PageRequest DTO 源码，无法证明其含 TITLE/BODY 字段或由请求体直接控制",
+      "证据包不含 PageRepository 实现，save/findById 的持久化与回读语义未证明，存储型链路缺关键一环",
+      "POST /api/pages 与 GET /api/pages/{pageId} 的认证/授权（过滤器、拦截器、security 配置）不在证据中，无法排除端点受限",
+      "无模板引擎相关证据，'模板注入'分类与所见的普通字符串拼接代码不符",
+      "未进行动态复现，且批准配置 application.yml 内容未提供，无法核实运行期防护"
+    ],
+    "evidence_ids": [
+      "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300:0:1578",
+      "file:0577ad1023f5c637dcdfa1a54f5ad51f5779ff5077e02e3d9bb4f31e64c97732:0:1010"
+    ],
+    "method": "independent_context_packet_review",
+    "input_sha256": "3f695040f6794257be6d55b08f2c92ad283db7dd7d1b895138e9658e9f3c8d06",
+    "input_identity_version": 1,
+    "evidence_fingerprints": {
+      "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300:0:1578": "a406d1aed5861b6a7e78b1e60840b462735c028c61f16eeb4f1dc2f4c728be29",
+      "file:0577ad1023f5c637dcdfa1a54f5ad51f5779ff5077e02e3d9bb4f31e64c97732:0:1010": "ce37daacef1b50f4112f82e435908bc0e418031f11572da6cc2f0017b8e1206d"
+    },
+    "detail_sha256": "5015bff1bb48b57724a422799498c76b7762f197cc7b03699b73819f8bdb84c3",
+    "independent_source_exploration": false,
+    "additional_evidence_reads": 0,
+    "dynamic_validation": false,
+    "attempts": 1,
+    "reused": true
+  },
+  "evidence": [
+    {
+      "chunk_id": "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300",
+      "evidence_id": "file:00911d3d7aec5c245c62f6e861296151825b31e2527d1e729d508ae1f74b2300:0:1578",
+      "repository_id": "sinkspring-bench-eval",
+      "snapshot_id": "sinkspring-bench-eval-v1",
+      "source_snapshot_id": "3c2aecab589d4e71a701138c1af6a327",
+      "index_run_id": "a112f871-4f3a-45cf-bd79-dd71986e3c60",
+      "relative_path": "src/main/java/com/sinkspring/bench/controller/PageController.java",
+      "content": "package com.sinkspring.bench.controller;\n\nimport com.sinkspring.bench.dto.PageRequest;\nimport com.sinkspring.bench.service.PageService;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.http.MediaType;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\n\nimport java.util.Map;\n\n@RestController\n@RequestMapping(\"/api/pages\")\npublic class PageController {\n\n    @Autowired\n    private PageService pageService;\n\n    @GetMapping(value = \"/search\", produces = MediaType.TEXT_HTML_VALUE)\n    public String search(@RequestParam String query) {\n        return pageService.buildSearchPage(query);\n    }\n\n    @PostMapping\n    public Map<String, String> save(@RequestBody PageRequest request) {\n        pageService.savePage(request);\n        return Map.of(\"pageId\", request.getPageId());\n    }\n\n    @GetMapping(value = \"/{pageId}\", produces = MediaType.TEXT_HTML_VALUE)\n    public String page(@PathVariable String pageId) {\n        return pageService.renderPage(pageId);\n    }\n\n    @GetMapping(value = \"/search/text\", produces = MediaType.TEXT_PLAIN_VALUE)\n    public String searchText(@RequestParam String query) {\n        return pageService.buildSearchText(query);\n    }\n}\n",
+      "content_sha256": "79e9c915ff0a4c1bfb15f3ed388748e6127fddda408dd1fe172f4cffd271b851",
+      "start_line": 1,
+      "end_line": 44,
+      "truncated": false,
+      "char_offset": 0,
+      "next_char_offset": null,
+      "total_characters": 1578
+    },
+    {
+      "chunk_id": "file:0577ad1023f5c637dcdfa1a54f5ad51f5779ff5077e02e3d9bb4f31e64c97732",
+      "evidence_id": "file:0577ad1023f5c637dcdfa1a54f5ad51f5779ff5077e02e3d9bb4f31e64c97732:0:1010",
+      "repository_id": "sinkspring-bench-eval",
+      "snapshot_id": "sinkspring-bench-eval-v1",
+      "source_snapshot_id": "3c2aecab589d4e71a701138c1af6a327",
+      "index_run_id": "a112f871-4f3a-45cf-bd79-dd71986e3c60",
+      "relative_path": "src/main/java/com/sinkspring/bench/service/PageService.java",
+      "content": "package com.sinkspring.bench.service;\n\nimport com.sinkspring.bench.dao.PageRepository;\nimport com.sinkspring.bench.dto.PageRequest;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.stereotype.Service;\nimport org.springframework.web.util.HtmlUtils;\n\nimport java.util.Map;\n\n@Service\npublic class PageService {\n\n    @Autowired\n    private PageRepository pageRepository;\n\n    public String buildSearchPage(String query) {\n        return \"<html><body><h1>Search</h1><p>Results for \" + query + \"</p></body></html>\";\n    }\n\n    public void savePage(PageRequest request) {\n        pageRepository.save(request);\n    }\n\n    public String renderPage(String pageId) {\n        Map<String, Object> page = pageRepository.findById(pageId);\n        return \"<html><body><h1>\" + page.get(\"TITLE\") + \"</h1>\"\n                + page.get(\"BODY\") + \"</body></html>\";\n    }\n\n    public String buildSearchText(String query) {\n        return \"Results for \" + HtmlUtils.htmlEscape(query);\n    }\n}\n",
+      "content_sha256": "ddbfe60792525426f90175125d65838b1fa2dd2bf8361fbcb4cee4af882b9ceb",
+      "start_line": 1,
+      "end_line": 34,
+      "truncated": false,
+      "char_offset": 0,
+      "next_char_offset": null,
+      "total_characters": 1010
+    }
+  ]
+}

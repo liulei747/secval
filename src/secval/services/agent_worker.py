@@ -47,6 +47,8 @@ hops、sink、control、hypothesis、needs、evidence_ids。hops为最多3项字
 {kind,target,reason,required_for}，kind只允许symbol_definition/callers/callees/data_path/config_lookup/route_guard/
 template_resolution/file_read/source_search。evidence_ids只能复制输入证据ID。用户security_context中已明确的入口、攻击者能力、
 完整范围和不存在外部控制是给定前提，不再列为needs。逐一覆盖包内入口，不得只选择最明显的三项；
+assignment.required_signals是程序在源码中定位到的危险语法线索，不代表漏洞成立，但每项都必须核查并形成
+path_sketch或在summary中说明被何种有效控制反证；不得无声遗漏。
 没有可信路径时path_sketches为空。总输出12000字以内。"""
 
 

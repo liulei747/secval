@@ -30,5 +30,6 @@ docs/*
 !docs/audit-handoff-2026-09-04.md
 !docs/audit-agent.md
 !docs/audit-scan-modes-design.md
+!docs/sinkspring-audit-optimization-summary.md
 gpu-wheels
 node_modules/

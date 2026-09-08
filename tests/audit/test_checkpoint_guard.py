@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from secval.services.audit_checkpoint import restore_checkpoint
+from secval.services.audit_checkpoint import restore_checkpoint, restore_path_checkpoint
 
 
 def parent_task():
@@ -37,3 +37,13 @@ def test_changed_inventory_rejects_resume(inventory):
     parent = parent_task()
     with pytest.raises(ValueError):
         restore_checkpoint(parent, parent["scope"], inventory)
+
+
+def test_path_checkpoint_does_not_replay_large_model_dialogue():
+    parent = parent_task()
+    parent.update(objective="audit", evidence={"e": {"content": "source"}},
+                  path_sketches=[{"id": "p"}])
+    parent["checkpoint"]["messages"] = [{"role": "user", "content": "x" * 110000}]
+    result = restore_path_checkpoint(parent, parent["scope"], parent["source_inventory"])
+    assert sum(len(row["content"]) for row in result["messages"]) < 1000
+    assert result["state"]["evidence"] == parent["evidence"]

@@ -5,7 +5,7 @@ import json
 import re
 
 from secval.models.agent_work import parse_worker_finding, require_refs, require_strings, require_text
-from secval.models.audit_contracts import ModelOutputError
+from secval.models.audit_contracts import ModelOutputError, ModelRequestError
 from secval.services.audit_stages import record_stage
 
 
@@ -55,6 +55,11 @@ def _dedupe_needs(needs):
 def _need_operations(need):
     kind, target = need["kind"], need["target"]
     if kind == "file_read":
+        if any(mark in target for mark in ("*", "classpath:")):
+            filename = re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*Mapper|\$\{", target)
+            terms = filename or (["${"] if ".xml" in target else [])
+            return [{"tool": "search_source", "arguments": {"text": term, "offset": 0}}
+                    for term in terms[:4]]
         return [{"tool": "read_file", "arguments": {"path": target}}]
     if kind == "data_path" and "->" in target:
         source, sink = (part.strip() for part in target.split("->", 1))
@@ -83,9 +88,11 @@ def _need_operations(need):
         # A need may name one fully qualified member or a compact group such as
         # ``DocumentService.loadDocument/storeDocument``. Extract every
         # class/method-shaped identifier and ignore generic package fragments.
+        tokens = re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", target)
         identifiers = list(dict.fromkeys(
-            value for value in re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", target)
+            value for index, value in enumerate(tokens)
             if any(character.isupper() for character in value)
+            or (index and any(character.isupper() for character in tokens[index - 1]))
         ))
         operations = [{"tool": "find_symbol", "arguments": {"text": value, "offset": 0}}
                       for value in identifiers]
@@ -110,56 +117,139 @@ def _need_operations(need):
             for term in dict.fromkeys(terms) if term][:4]
 
 
-def supplement_packet_evidence(team, packet, base_evidence):
-    """Resolve all needs in two deterministic local batches: locate, then read."""
-    operations = []
-    for need in packet.get("needs", []):
-        operations.extend(_need_operations(need))
-    operations = operations[:12]
-    if not operations:
-        return base_evidence, {"round": 1, "operations": 0, "new_evidence": 0,
-                               "stagnant_rounds": 1, "stop_reason": "no_needs"}
-    located = team.read_tool("batch_evidence", {"operations": operations})
-    evidence = dict(base_evidence)
-    team.collect_evidence("batch_evidence", located, evidence)
+_DEPENDENCY_STOPWORDS = {
+    "String", "Object", "Map", "List", "Set", "Integer", "Long", "Boolean",
+    "Override", "Autowired", "RequestBody", "RequestParam", "PathVariable",
+    "GetMapping", "PostMapping", "PutMapping", "PatchMapping", "DeleteMapping",
+    "RequestMapping", "RestController", "Service", "Repository", "Component",
+}
+
+
+def _dependency_terms(packet, evidence):
+    """Return bounded project symbols that can close source/control/sink gaps.
+
+    This is deliberately a high-recall lexical frontier rather than a claim that
+    the relation exists. Search results remain locators and are read before use.
+    """
+    terms = []
+    for row in evidence.values():
+        content = row.get("content", "")
+        for qualified, name in re.findall(
+                r"(?m)^\s*import\s+((?:[A-Za-z_$][\w$]*\.)+([A-Z][\w$]*));", content):
+            if not qualified.startswith(("java.", "javax.", "jakarta.", "org.springframework.")):
+                terms.append(name)
+        terms.extend(re.findall(
+            r"(?:private|protected|public)\s+([A-Z][A-Za-z0-9_$]*(?:DAO|Dto|DTO|Service|Repository|Mapper|Validator|Factory|Handler|Filter))\b",
+            content,
+        ))
+    for sketch in packet.get("sketches", []):
+        text = " ".join([sketch.get("source", ""), sketch.get("sink", ""),
+                         sketch.get("control", ""), *sketch.get("hops", [])])
+        terms.extend(re.findall(r"\b[A-Za-z_$][A-Za-z0-9_$]{3,}\b", text))
+        # Follow only wrappers that invoke a symbol already on this candidate
+        # path. This closes private-sink -> public-wrapper chains without the
+        # broad all-method fanout that previously polluted packets.
+        hop_symbols = re.findall(r"\b[A-Za-z_$][A-Za-z0-9_$]{3,}\b",
+                                 " ".join(sketch.get("hops", [])))
+        for row in evidence.values():
+            content = row.get("content", "")
+            for symbol in hop_symbols:
+                for call in re.finditer(r"\b" + re.escape(symbol) + r"\s*\(", content):
+                    declarations = re.findall(
+                        r"(?:public|protected|private)\s+(?:[\w<>?,.\[\]]+\s+)+([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*(?:throws[^{}]+)?\{",
+                        content[:call.start()],
+                    )
+                    if declarations and declarations[-1] != symbol:
+                        terms.append(declarations[-1])
+    generic = _DEPENDENCY_STOPWORDS | {
+        "return", "public", "private", "protected", "static", "throws", "catch",
+        "super", "this", "value", "content", "request", "response", "build", "save",
+    }
+    seen, result = set(), []
+    for term in terms:
+        if term in generic or term.lower() in {item.lower() for item in generic}:
+            continue
+        if term not in seen:
+            seen.add(term)
+            result.append(term)
+    return result[:24]
+
+
+def _paths_from_tool_result(result):
     paths = []
-    for item in located.get("items", []):
-        result = item.get("result", {})
-        for row in result.get("rows", []):
+    for item in result.get("items", []):
+        child = item.get("result", {})
+        for row in child.get("rows", []):
             path = row.get("path") or row.get("relative_path") or row.get("caller_path")
             if path and path not in paths:
                 paths.append(path)
-        for path_result in result.get("paths", []):
+        for path_result in child.get("paths", []):
             for step in path_result.get("steps", []):
                 if step.get("path") and step["path"] not in paths:
                     paths.append(step["path"])
-    already = {row.get("relative_path") for row in evidence.values()}
-    reads = [{"tool": "read_file", "arguments": {"path": path}}
-             for path in paths if path not in already][:12]
-    read_result = {"items": []}
-    if reads:
-        read_result = team.read_tool("batch_evidence", {"operations": reads})
-        team.collect_evidence("batch_evidence", read_result, evidence)
+    return paths
+
+
+def supplement_packet_evidence(team, packet, base_evidence):
+    """Build a bounded evidence closure from declared gaps and source relations."""
+    declared = []
+    for need in packet.get("needs", []):
+        declared.extend(_need_operations(need))
+    evidence = dict(base_evidence)
+    searched, read_paths = set(), {row.get("relative_path") for row in evidence.values()}
+    total_operations, stagnant, rounds = 0, 0, 0
+    locator_results, read_results = [], []
+    for round_number in range(1, 4):
+        rounds = round_number
+        operations = []
+        if round_number == 1:
+            operations.extend(declared)
+        frontier_terms = []
+        for term in _dependency_terms(packet, evidence):
+            if term not in searched:
+                frontier_terms.append(term)
+                operations.append({"tool": "search_source", "arguments": {"text": term, "offset": 0}})
+        operations = operations[:12]
+        searched.update(operation["arguments"]["text"] for operation in operations
+                        if operation["tool"] == "search_source")
+        if not operations:
+            stagnant += 1
+            break
+        located = team.read_tool("batch_evidence", {"operations": operations})
+        locator_results.append(located)
+        total_operations += len(operations)
+        paths = [path for path in _paths_from_tool_result(located) if path not in read_paths]
+        # Definitions close paths; files merely importing the same class are
+        # secondary. Put Foo.java/Foo.xml ahead of broad textual matches.
+        frontier = set(frontier_terms)
+        paths.sort(key=lambda path: (0 if path.rsplit("/", 1)[-1].rsplit(".", 1)[0] in frontier else 1,
+                                     path))
+        paths = paths[:8]
+        reads = [{"tool": "read_file", "arguments": {"path": path}} for path in paths]
+        before = len(evidence)
+        if reads:
+            read_result = team.read_tool("batch_evidence", {"operations": reads})
+            read_results.append(read_result)
+            team.collect_evidence("batch_evidence", read_result, evidence)
+            total_operations += len(reads)
+            read_paths.update(paths)
+        if len(evidence) == before:
+            stagnant += 1
+            if stagnant >= 2:
+                break
+        else:
+            stagnant = 0
     new_count = len(evidence) - len(base_evidence)
-    rounds = 1
-    stagnant = 0 if new_count else 1
-    stop_reason = "needs_attempted"
-    if not new_count:
-        # One deterministic retry detects an unchanged evidence frontier. It is
-        # local/tool-only and does not resend source to a model.
-        team.read_tool("batch_evidence", {"operations": operations})
-        rounds = 2
-        stagnant = 2
-        stop_reason = "two_rounds_without_new_evidence"
-    trace = {"round": rounds, "operations": len(operations) * rounds + len(reads),
-             "new_evidence": new_count, "new_paths": 0,
-             "stagnant_rounds": stagnant,
-             "stop_reason": stop_reason,
-             "locator_results": located, "read_results": read_result}
+    stop_reason = ("closure_complete_or_bounded" if new_count
+                   else "two_rounds_without_new_evidence" if stagnant >= 2 else "no_new_dependencies")
+    trace = {"round": rounds, "operations": total_operations,
+             "new_evidence": new_count, "new_paths": len(read_paths),
+             "stagnant_rounds": stagnant, "stop_reason": stop_reason,
+             "locator_results": locator_results, "read_results": read_results}
     return evidence, trace
 
 
-def model_evidence_view(evidence, *, content_limit=8000):
+def model_evidence_view(evidence, *, content_limit=32000):
     """Keep canonical full evidence server-side; send only a bounded packet view."""
     rows, remaining = [], content_limit
     for row in evidence.values():
@@ -167,7 +257,7 @@ def model_evidence_view(evidence, *, content_limit=8000):
             "evidence_id", "chunk_id", "relative_path", "start_line", "end_line",
             "content_sha256", "truncated") if key in row}
         content = row.get("content", "")
-        take = min(len(content), max(0, remaining), 5000)
+        take = min(len(content), max(0, remaining), 8000)
         projected["content"] = content[:take]
         projected["packet_truncated"] = take < len(content)
         remaining -= take
@@ -269,6 +359,8 @@ VALIDATION_PROMPT = """你是一次性路径验证器。输入是后端固定的
 security_context是用户明确给定的攻击者能力、入口、调用关系和范围完整性前提，必须用于可达性判断；
 若它明确说明所给代码包含完整业务控制或不存在其他授权层，不得要求额外调用者/外部控制源码来推翻该前提。
 代码自身是否执行安全检查仍须evidence支持。
+对已批准读取的配置文件，危险配置值本身足以支持“静态配置缺陷”；把“仅在该配置实际激活时可达”写入limitations，
+不得仅因没有运行时profile或网络暴露证明就判inconclusive。动态可达性影响严重性和前提，不抹去静态缺陷。
 逐条判断漏洞假设：supported/refuted/inconclusive。输入packet.needs所列证据没有出现在evidence时，除非现有源码已决定性证明，
 必须判inconclusive；暂未看到防护不能判supported，暂未看到漏洞也不能判refuted。
 outcomes必须逐项覆盖packet.path_ids且不得添加其他路径。非supported项严格只包含以下六个字段：
@@ -295,6 +387,7 @@ def run_validation_packet(team, packet_id):
                  metadata={"surface": packet.get("surface"),
                            "candidate_type": packet.get("candidate_type")})
     sketches = [row for row in task.get("path_sketches", []) if row["id"] in packet["path_ids"]]
+    packet["sketches"] = sketches
     evidence = {}
     for worker in task.get("agent_tasks", []):
         evidence.update(worker.get("evidence", {}))
@@ -328,26 +421,32 @@ def run_validation_packet(team, packet_id):
                "supplied_threat_model": task.get("supplied_threat_model"),
                "context_rule": "这是增量证据；用户给定安全上下文是审计前提，不是源码证据；未提供的旧源码不要假定其内容。"}
     model = team.model_factory()
+
+    def compact_request():
+        compact_evidence = [{key: row.get(key) for key in
+                             ("evidence_id", "chunk_id", "relative_path", "start_line", "end_line")}
+                            | {"content": row.get("content", "")[:1200]}
+                            for row in list(selected.values())[:3]]
+        compact = {"packet": packet, "paths": sketches,
+                   "security_context": task.get("security_context"),
+                   "evidence": compact_evidence}
+        return team.request(team.model_factory(),
+                            [{"role": "system", "content": COMPACT_REPAIR_PROMPT},
+                             {"role": "user", "content": json.dumps(compact, ensure_ascii=False)}],
+                            "path-validation:" + packet_id + ":repair")
+
     try:
         try:
             raw = team.request(model, [{"role": "system", "content": VALIDATION_PROMPT},
                                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
                                "path-validation:" + packet_id)
-        except ModelOutputError as error:
-            if error.code != "truncated":
-                raise
-            compact_evidence = [{key: row.get(key) for key in
-                                 ("evidence_id", "chunk_id", "relative_path", "start_line", "end_line")}
-                                | {"content": row.get("content", "")[:1200]}
-                                for row in list(selected.values())[:3]]
-            compact = {"packet": packet, "paths": sketches,
-                       "security_context": task.get("security_context"),
-                       "evidence": compact_evidence}
-            raw = team.request(team.model_factory(),
-                               [{"role": "system", "content": COMPACT_REPAIR_PROMPT},
-                                {"role": "user", "content": json.dumps(compact, ensure_ascii=False)}],
-                               "path-validation:" + packet_id + ":repair")
-        result = parse_validation_result(raw, packet, sketches, selected)
+            result = parse_validation_result(raw, packet, sketches, selected)
+        except (ModelOutputError, ModelRequestError):
+            # Empty content, malformed JSON and one provider timeout are all
+            # recoverable with the same much smaller deterministic packet.
+            # The retry is explicit in model_requests and happens at most once.
+            raw = compact_request()
+            result = parse_validation_result(raw, packet, sketches, selected)
         result = build_supported_findings(team, packet, result, sketches, selected)
         team.persist_path_validation(packet_id, result, selected)
         requests = team.store.get(team.task_id).get("model_requests", [])
@@ -371,11 +470,21 @@ def run_validation_packet(team, packet_id):
             target.update(status="failed", attempts=1,
                           error=f"{type(error).__name__}: {str(error)[:300]}")
             sketches_now = task.get("path_sketches", [])
+            validations = list(task.get("path_validations", []))
             for sketch in sketches_now:
                 if sketch.get("id") in target["path_ids"]:
                     sketch["status"] = "validation_failed"
+                    validations = [row for row in validations
+                                   if row.get("path_id") != sketch["id"]]
+                    validations.append({
+                        "path_id": sketch["id"], "packet_id": packet_id,
+                        "outcome": "failed", "assessment": "路径验证未取得合法结论",
+                        "counterevidence": "未形成有效反证判断", "limitations": [
+                            f"{type(error).__name__}: {str(error)[:200]}"],
+                        "evidence_ids": list(target.get("evidence_ids", [])),
+                    })
             team.store.update(team.task_id, validation_packets=packets,
-                              path_sketches=sketches_now)
+                              path_sketches=sketches_now, path_validations=validations)
         record_stage(team.store, team.task_id, "path_validation", "failed",
                      scope_id=packet_id, name="路径验证",
                      completed_units=0, total_units=len(packet.get("path_ids", [])),

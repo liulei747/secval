@@ -34,7 +34,10 @@ def export_audit_report(task):
     workers = task.get("agent_tasks", [])
     # 子任务失败或结果未交付都属于缺口，不能因为最终报告存在而消失。
     for worker in workers:
-        if worker.get("status") != "completed" or worker["id"] not in task.get("team_deliveries", []):
+        durable_probe = (worker.get("mode") == "prefill_path_probe"
+                         and worker.get("status") == "completed")
+        if (worker.get("status") != "completed"
+                or (worker["id"] not in task.get("team_deliveries", []) and not durable_probe)):
             coverage["deferred"].append({"id": worker["id"], "reason": "子任务未完成或结果尚未交付主调查"})
     # P2-9：按范围归组呈现 scope 子任务覆盖情况；范围名来自分派时的 assignment 标题。
     scope_groups = []
@@ -96,6 +99,12 @@ def export_audit_report(task):
         "findings": report.get("findings", []) if task.get("report") else [],
         "hypotheses": report.get("hypotheses", []),
         "candidateDetails": deepcopy(task.get("finding_detail_history", [])),
+        "discoveryPackets": deepcopy(task.get("discovery_packets", [])),
+        "entryInventory": deepcopy(task.get("entry_inventory", [])),
+        "sinkInventory": deepcopy(task.get("sink_inventory", [])),
+        "pathSketches": deepcopy(task.get("path_sketches", [])),
+        "validationPackets": deepcopy(task.get("validation_packets", [])),
+        "pathValidations": deepcopy(task.get("path_validations", [])),
         "boundaries": boundaries, "investigations": investigations,
         "independentReviews": validations, "coverage": coverage,
         "completion": report_completion(task, coverage),

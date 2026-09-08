@@ -12,7 +12,7 @@ from uuid import uuid4
 from secval.cross_process_file_lock import CrossProcessFileLock
 from secval.interfaces.audit import AuditModelPort, AuditStorePort, EvidenceToolsPort
 from secval.models.audit import AuditBusyError, AuditTaskInput
-from secval.services.audit_checkpoint import restore_checkpoint
+from secval.services.audit_checkpoint import restore_checkpoint, restore_path_checkpoint
 from secval.services.audit_report import export_audit_report
 from secval.services.audit_runner import run_task
 from secval.services.audit_model_call import RecordedAuditModel
@@ -85,7 +85,9 @@ class AuditService:
                 raise ValueError("协作审计需要已绑定的源码快照、索引批次和文件清单，请先完整建立索引")
             continuation = {}
             if parent is not None:
-                saved = restore_checkpoint(parent, scope, inventory)
+                saved = (restore_path_checkpoint(parent, scope, inventory)
+                         if parent.get("path_sketches") else
+                         restore_checkpoint(parent, scope, inventory))
                 continuation = {**saved["state"], "checkpoint": saved,
                                     "previous_independent_reviews": parent.get("independent_reviews", []),
                                     "parent_task_id": parent["id"],
@@ -99,6 +101,21 @@ class AuditService:
                     continuation["team_deliveries"] = [worker_id for worker_id in
                             continuation.get("team_deliveries", []) if worker_id in completed]
                     continuation["checkpoint"]["state"]["team_deliveries"] = continuation["team_deliveries"]
+                    # Path validation is a durable ledger, not transient model
+                    # context. Reuse terminal outcomes and retry only failed
+                    # packets in the child task.
+                    continuation["path_sketches"] = deepcopy(parent.get("path_sketches", []))
+                    for sketch in continuation["path_sketches"]:
+                        if sketch.get("status") in {"validation_failed", "queued_for_validation"}:
+                            sketch["status"] = "queued_for_validation"
+                    continuation["validation_packets"] = deepcopy(parent.get("validation_packets", []))
+                    for packet in continuation["validation_packets"]:
+                        if packet.get("status") in {"failed", "queued", "running"}:
+                            packet.update(status="queued", error=None,
+                                          prior_attempts=packet.get("prior_attempts", 0)
+                                          + packet.get("attempts", 0))
+                    continuation["path_validations"] = deepcopy(parent.get("path_validations", []))
+                    continuation["evidence_rounds"] = deepcopy(parent.get("evidence_rounds", []))
             task = self.store.create({**asdict(command), **continuation})
             task = self.store.update(task["id"], **continuation, scope=scope, source_inventory=inventory)
             record_stage(
@@ -201,7 +218,12 @@ class AuditService:
             self.active_task_id = task_id
             if task.get("parallel_agents", 1) > 1:
                 team = AgentTeam(self.store, task_id, self.model_factory, tools)
-                self._submit_scope_splits(team, task)
+                # Determine the execution strategy before creating legacy scope
+                # workers. Previously they consumed worker slots and budget even
+                # when the bounded path pipeline was selected moments later.
+                team.prepare_seed()
+                if not team.path_pipeline_enabled:
+                    self._submit_scope_splits(team, task)
                 run_task(self.store, task_id, TeamModel(team, model), tools, team)
             else:
                 run_task(self.store, task_id, RecordedAuditModel(model, self.store, task_id), tools)

@@ -37,6 +37,19 @@ def report_coverage(boundaries, investigations, validations=(), baseline=None):
 def report_completion(task, coverage):
     """报告提交与待办收口是两件事；均不代表完整安全审计。"""
     reasons = []
+    discovery = task.get("discovery_packets", [])
+    probe_workers = [row for row in task.get("agent_tasks", [])
+                     if row.get("mode") == "prefill_path_probe"]
+    if discovery and (len(probe_workers) < len(discovery)
+                      or any(row.get("status") != "completed" for row in probe_workers)):
+        reasons.append("仍有入口、敏感操作或配置发现包未成功处理")
+    path_packets = task.get("validation_packets", [])
+    if any(row.get("status") != "completed" for row in path_packets):
+        reasons.append("仍有路径验证包未完成")
+    sketches = task.get("path_sketches", [])
+    terminal = {"supported", "refuted", "inconclusive"}
+    if any(row.get("status") not in terminal for row in sketches):
+        reasons.append("仍有路径草稿未形成可复核结论")
     if coverage.get("deferred"):
         reasons.append("仍有未收口的调查、基线问题或候选复核")
     scope_groups = (coverage.get("scopeCoverage") or {}).get("groups") or []
