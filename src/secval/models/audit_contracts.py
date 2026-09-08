@@ -84,7 +84,7 @@ class ToolAction:
             "submit_audit_report": {"summary", "hypotheses", "unknowns"},
             "submit_independent_review": {"investigation_id", "outcome", "assessment",
                                             "counterevidence", "limitations", "evidence_ids"},
-            "submit_worker_progress": {"summary", "questions", "unknowns", "reviewed_files", "findings"},
+            "submit_worker_progress": {"summary", "questions", "unknowns", "reviewed_files", "findings", "path_sketches"},
             "start_investigator": {"title", "question", "evidence_ids"},
             "team_progress": set(),
             "wait_for_workers": set(),
@@ -117,6 +117,19 @@ class ToolAction:
         if set(args) - allowed[name]:
             # 仅列出后端允许的字段，不回显模型发送的未知字段或值。
             raise ModelOutputError("工具包含未允许参数；允许字段：" + ", ".join(sorted(allowed[name])))
+        if name == "batch_evidence":
+            operations = args.get("operations")
+            if not isinstance(operations, list) or not 1 <= len(operations) <= 12:
+                raise ModelOutputError("batch_evidence.operations必须包含1到12个动作")
+            for operation in operations:
+                if not isinstance(operation, dict) or set(operation) != {"tool", "arguments"}:
+                    raise ModelOutputError("batch_evidence中的动作必须仅包含tool和arguments")
+                if operation.get("tool") == "batch_evidence":
+                    raise ModelOutputError("batch_evidence不允许嵌套")
+                if operation.get("tool") not in READ_TOOL_ARGUMENTS:
+                    raise ModelOutputError("batch_evidence仅允许只读取证工具")
+                cls.parse(operation)
+            return cls(tool=name, arguments=args)
         offset = args.get("offset", 0)
         char_offset = args.get("char_offset", 0)
         if type(char_offset) is not int or char_offset < 0:

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
+from copy import deepcopy
 
 from secval.task_lease import lease_state
 
@@ -157,6 +158,32 @@ class AuditStore:
                     "UPDATE tasks SET data=? WHERE id=?", (json.dumps(task), task_id)
                 )
             return task
+
+    def upsert_stage(self, task_id, incoming):
+        """Atomically merge one scoped stage record; parallel packets cannot overwrite peers."""
+        with self.lock:
+            with self.connect() as db:
+                row = db.execute("SELECT data FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if row is None:
+                    raise KeyError(task_id)
+                task = json.loads(row[0])
+                if task["status"] == "cancelled":
+                    return deepcopy(incoming)
+                stages = task.get("stage_progress", [])
+                target = next((item for item in stages
+                               if item.get("stage_id") == incoming.get("stage_id")
+                               and item.get("scope_id", "task") == incoming.get("scope_id", "task")), None)
+                if target is None:
+                    stages.append(deepcopy(incoming))
+                    target = stages[-1]
+                else:
+                    started_at = target.get("started_at")
+                    target.update(deepcopy(incoming))
+                    if started_at:
+                        target["started_at"] = started_at
+                task["stage_progress"] = stages
+                db.execute("UPDATE tasks SET data=? WHERE id=?", (json.dumps(task), task_id))
+                return deepcopy(target)
 
     def next_queued(self):
         """读取最早排队任务；真正归属由claim的条件更新决定。"""

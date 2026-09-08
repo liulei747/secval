@@ -16,7 +16,6 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import HTMLResponse
 from neo4j.exceptions import Neo4jError
 from opensearchpy.exceptions import OpenSearchException
 from pydantic import BaseModel, Field
@@ -47,7 +46,6 @@ from secval.services.index_job_service import (
     IndexProcessBusyError,
 )
 from secval.web_api.audit_api import router as audit_router
-from secval.web_api.workbench import router as workbench_router
 from secval.web_api.repository_upload import (
     UploadRepositoryResponse,
     save_uploaded_repository,
@@ -352,10 +350,6 @@ def create_search_app(
         return {"deleted": True, "snapshot_id": snapshot_id,
                 "removed_file_rows": removed,
                 "note": "仅删除未绑定快照；已绑定历史取证数据不受影响"}
-
-    @app.get("/graph", response_class=HTMLResponse)
-    def graph_page() -> str:
-        return _render_graph_page()
 
     @app.post("/api/repositories/index-jobs", response_model=IndexJobResponse, status_code=202)
     def create_index_job(index_request: IndexRepositoryRequest, request: Request):
@@ -679,7 +673,6 @@ def create_search_app(
         return IndexRepositoryResponse(**_index_result_dict(result))
 
     app.include_router(audit_router)
-    app.include_router(workbench_router)
     return app
 
 

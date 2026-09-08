@@ -24,6 +24,25 @@ def require_refs(value, evidence):
     return value
 
 
+NEED_KINDS = {"symbol_definition", "callers", "callees", "data_path", "config_lookup",
+              "route_guard", "template_resolution", "file_read", "source_search"}
+
+
+def parse_evidence_need(raw):
+    """Normalize legacy prose while making new probes emit executable requests."""
+    if isinstance(raw, str) and raw.strip():
+        return {"kind": "source_search", "target": raw.strip(),
+                "reason": raw.strip(), "required_for": "validation"}
+    required = {"kind", "target", "reason", "required_for"}
+    if not isinstance(raw, dict) or set(raw) != required or raw.get("kind") not in NEED_KINDS:
+        raise ModelOutputError("need需要kind、target、reason、required_for且kind受控")
+    for name in required - {"kind"}:
+        require_text(raw[name], "need." + name, 500)
+    if raw["kind"] == "file_read" and not any(mark in raw["target"] for mark in ("/", "\\", ".java", ".py", ".js", ".xml")):
+        raw = {**raw, "kind": "source_search"}
+    return raw
+
+
 def parse_assignment(arguments, evidence):
     if not isinstance(arguments, dict) or set(arguments) != {"title", "question", "evidence_ids"}:
         raise ModelOutputError("分派任务需要title、question、evidence_ids")
@@ -35,8 +54,8 @@ def parse_assignment(arguments, evidence):
 
 def parse_work_result(raw, evidence):
     base = {"summary", "questions", "unknowns", "reviewed_files"}
-    if not isinstance(raw, dict) or not base <= set(raw) or set(raw) - base - {"findings"}:
-        raise ModelOutputError("子任务结果需要summary、questions、unknowns、reviewed_files，可选findings")
+    if not isinstance(raw, dict) or not base <= set(raw) or set(raw) - base - {"findings", "path_sketches"}:
+        raise ModelOutputError("子任务结果需要summary、questions、unknowns、reviewed_files，可选findings和path_sketches")
     require_text(raw["summary"], "summary")
     require_strings(raw["unknowns"], "unknowns")
     if not isinstance(raw["questions"], list) or len(raw["questions"]) > 12:
@@ -62,6 +81,62 @@ def parse_work_result(raw, evidence):
         raise ModelOutputError("findings必须为最多8项的数组")
     for finding in findings:
         parse_worker_finding(finding, evidence)
+    sketches = raw.get("path_sketches", [])
+    if not isinstance(sketches, list) or len(sketches) > 12:
+        raise ModelOutputError("path_sketches必须为最多12项的数组")
+    allowed_surfaces = {"authentication", "authorization", "file", "command_execution",
+                        "deserialization", "injection", "outbound_request", "data_exposure",
+                        "trust_boundary", "configuration", "other"}
+    allowed_types = {"auth_bypass", "session_flaw", "object_level_authorization",
+                     "function_level_authorization", "tenant_isolation", "sql_injection",
+                     "template_injection", "expression_injection", "command_injection",
+                     "path_traversal", "unsafe_upload", "unsafe_deserialization", "ssrf",
+                     "sensitive_data_exposure", "message_trust", "xxe", "xss",
+                     "jndi_injection", "open_redirect", "jwt_verification_bypass",
+                     "arbitrary_file_write", "hardcoded_secret", "security_misconfiguration",
+                     "unknown"}
+    surface_aliases = {"access_control": "authorization", "access-control": "authorization",
+                       "idor": "authorization", "template": "injection", "template_injection": "injection",
+                       "command": "command_execution", "file_access": "file", "ssrf": "outbound_request",
+                       "information_disclosure": "data_exposure", "sensitive_data": "data_exposure",
+                       "http": "other", "web": "other", "config": "configuration"}
+    type_aliases = {"idor": "object_level_authorization", "bola": "object_level_authorization",
+                    "missing_authorization": "function_level_authorization", "command_execution": "command_injection",
+                    "directory_traversal": "path_traversal", "file_upload": "unsafe_upload",
+                    "deserialization": "unsafe_deserialization", "data_exposure": "sensitive_data_exposure",
+                    "stored_xss": "xss", "reflected_xss": "xss", "jwt_bypass": "jwt_verification_bypass",
+                    "file_write": "arbitrary_file_write", "config": "security_misconfiguration",
+                    "sqli_order_by": "sql_injection", "sqli_where": "sql_injection",
+                    "sqli_limit": "sql_injection", "sqli": "sql_injection"}
+    for sketch in sketches:
+        required = {"surface", "candidate_type", "entry", "source", "hops", "sink", "control",
+                    "hypothesis", "needs", "evidence_ids"}
+        if not isinstance(sketch, dict) or set(sketch) != required:
+            raise ModelOutputError("path_sketch字段不完整")
+        sketch["surface"] = surface_aliases.get(sketch["surface"], sketch["surface"])
+        sketch["candidate_type"] = type_aliases.get(sketch["candidate_type"], sketch["candidate_type"])
+        if sketch["surface"] not in allowed_surfaces:
+            raise ModelOutputError("path_sketch.surface不合法")
+        if sketch["candidate_type"] not in allowed_types:
+            raise ModelOutputError("path_sketch.candidate_type不合法")
+        for name in ("entry", "source", "sink", "control", "hypothesis"):
+            require_text(sketch[name], name, 500)
+        # One-shot probes do not get a format-repair conversation. Normalize only
+        # unambiguous scalar/empty variants; semantic fields and evidence remain strict.
+        for name in ("hops",):
+            if sketch[name] is None:
+                sketch[name] = []
+            elif isinstance(sketch[name], str):
+                sketch[name] = [sketch[name]] if sketch[name].strip() else []
+        require_strings(sketch["hops"], "hops", empty=True)
+        if sketch["needs"] is None:
+            sketch["needs"] = []
+        elif isinstance(sketch["needs"], (str, dict)):
+            sketch["needs"] = [sketch["needs"]]
+        if not isinstance(sketch["needs"], list) or len(sketch["needs"]) > 6:
+            raise ModelOutputError("needs必须为最多6项的结构化数组")
+        sketch["needs"] = [parse_evidence_need(item) for item in sketch["needs"]]
+        require_refs(sketch["evidence_ids"], evidence)
     import json
     if len(json.dumps(raw, ensure_ascii=False)) > 18000:
         raise ModelOutputError("子任务结果过长，请精简描述，不删除反证和未知项")

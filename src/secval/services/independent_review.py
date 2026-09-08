@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import asdict
 
 from secval.models.audit_contracts import CodeEvidence, ToolAction, ModelOutputError
-from secval.models.audit_tools import READ_TOOL_ARGUMENTS, read_tool_prompt
+from secval.models.audit_tools import READ_TOOL_ARGUMENTS, iter_evidence_rows, read_tool_prompt
 from secval.models.investigation_review import InvestigationReview, OUTCOME_GUIDANCE
 from secval.services.finding_report import detail_digest
 
@@ -136,8 +136,8 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
                 result = tools.call(action.tool, action.arguments)
             except ValueError as error:
                 result = {"error": str(error)}
-            if action.tool in {"read_chunk", "read_file"}:
-                for row in result.get("rows", []):
+            if action.tool in READ_TOOL_ARGUMENTS:
+                for row in iter_evidence_rows(action.tool, result):
                     verified = CodeEvidence.from_read(row)
                     scopes = {(item.get("repository_id"), item.get("snapshot_id")) for item in selected.values()}
                     if (verified.repository_id, verified.snapshot_id) not in scopes:

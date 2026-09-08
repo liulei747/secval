@@ -287,6 +287,25 @@ def _native_read_tools(available_names):
     for name, argument_names in READ_TOOL_ARGUMENTS.items():
         if name not in available_names:
             continue
+        if name == "batch_evidence":
+            operation_names = sorted(set(available_names) - {"batch_evidence"})
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": READ_TOOL_DESCRIPTIONS[name],
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"operations": {"type": "array", "minItems": 1,
+                            "maxItems": 12, "items": {"type": "object", "properties": {
+                                "tool": {"type": "string", "enum": operation_names},
+                                "arguments": {"type": "object"}},
+                                "required": ["arguments", "tool"], "additionalProperties": False}}},
+                        "required": ["operations"], "additionalProperties": False,
+                    },
+                },
+            })
+            continue
         properties = {
             argument_name: {"type": "integer" if argument_name in integer_names else "string"}
             for argument_name in sorted(argument_names)
@@ -361,6 +380,11 @@ WORKER_FILE_REVIEW = _object({
     "file_id": STRING, "assessment": STRING, "controls_checked": STRINGS,
     "unknowns": STRINGS,
 })
+PATH_SKETCH = _object({
+    "surface": STRING, "candidate_type": STRING, "entry": STRING, "source": STRING, "hops": STRINGS,
+    "sink": STRING, "control": STRING, "hypothesis": STRING,
+    "needs": STRINGS, "evidence_ids": STRINGS,
+})
 REPORT_HYPOTHESIS = _object({"claim": STRING, "counterevidence": STRING,
                              "unknowns": STRING, "evidence_ids": STRINGS})
 
@@ -415,6 +439,7 @@ ACTION_TOOL_SCHEMAS = {
         "unknowns": STRINGS,
         "reviewed_files": {"type": "array", "items": WORKER_FILE_REVIEW},
         "findings": {"type": "array", "items": WORKER_FINDING},
+        "path_sketches": {"type": "array", "items": PATH_SKETCH},
     }, {"summary", "questions", "unknowns", "reviewed_files"}),
 }
 

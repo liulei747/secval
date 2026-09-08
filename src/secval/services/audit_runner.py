@@ -4,7 +4,7 @@ from dataclasses import asdict
 from time import monotonic
 
 from secval.interfaces.audit import AuditModelPort, AuditStorePort, EvidenceToolsPort
-from secval.models.audit_tools import read_tool_prompt
+from secval.models.audit_tools import READ_TOOL_ARGUMENTS, iter_evidence_rows, read_tool_prompt
 from secval.models.audit import EvidenceServiceError
 from secval.models.audit_contracts import (
     CodeEvidence,
@@ -23,6 +23,7 @@ from secval.models.threat_model import ThreatModel
 from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context, tool_reply_for_model
 from secval.services.audit_progress import audit_progress, request_budget_note
+from secval.services.audit_stages import record_stage
 from secval.services.baseline_audit import run_baseline
 from secval.services.file_review_coverage import file_review_coverage
 from secval.services.finding_report import assemble_findings
@@ -122,6 +123,8 @@ def _run_task(store, task_id, model, tools, team=None):
         configure_actions(actions)
     store.update(task_id, status="running", phase="investigation", schema_version=3,
                  read_coverage=read_coverage(task.get("evidence", {})))
+    record_stage(store, task_id, "audit_execution", "running", name="审计执行",
+                 completed_units=0, total_units=task.get("max_steps", 0))
     messages = [
         {"role": "system", "content": SYSTEM + (TEAM_PROMPT if team else "")},
         {"role": "user", "content": task["objective"]},
@@ -178,6 +181,20 @@ def _run_task(store, task_id, model, tools, team=None):
                                "。先分析这些证据并记录阶段成果；只为具体数据流缺口定向补读。")
                 messages.append({"role": "user", "content": label
                                  + json.dumps(list(seeded.values()), ensure_ascii=False) + instruction})
+            if team.path_pipeline_enabled:
+                # Large repositories use one bounded discovery request followed
+                # by grouped independent validators. Do not also start the old
+                # free-form parent investigation over the same source packet.
+                team.wait_for_all()
+                current = store.get(task_id)
+                evidence.update(current.get("evidence", {}))
+                for worker in current.get("agent_tasks", []):
+                    evidence.update(worker.get("evidence", {}))
+                boundaries = current.get("security_boundaries", [])
+                investigations = current.get("investigations", [])
+                finding_details = current.get("finding_detail_history", [])
+                messages.append({"role": "user", "content":
+                    "大仓库路径发现与分包验证已结束；下面仅提交后端确定性报告，不再调用主调查模型。"})
         if not team and task.get("independent_baseline", False) and (not saved or saved["phase"] == "baseline"):
             baseline_calls, baseline = run_baseline(store, task_id, model, tools, task, evidence, events, start)
             if configure_actions is not None:
@@ -213,7 +230,9 @@ def _run_task(store, task_id, model, tools, team=None):
                     ) for item in investigations
                 )
                 remaining_calls = task["max_steps"] - store.get(task_id).get("model_calls", 0)
-                if (team and can_finalize
+                if (team and team.path_pipeline_enabled and not team.pending()):
+                    action = {"report": _canonical_report(investigations, finding_details)}
+                elif (team and can_finalize
                         and (remaining_calls <= 3 or task.get("parent_report_submitted"))
                         and not team.pending() and not team.undelivered()):
                     action = {"report": _canonical_report(investigations, finding_details)}
@@ -341,14 +360,26 @@ def _run_task(store, task_id, model, tools, team=None):
 
                 def run_team_review(candidate, boundary, detail):
                     """每个候选使用独立模型和局部写入缓冲，不能并发修改主台账。"""
-                    review_model = TeamModel(team, team.model_factory(), "review:" + candidate["id"])
-                    validation = review_packet(
-                        review_model, candidate, boundary, evidence, tools=None,
-                        cancelled=lambda: store.get(task_id)["status"] == "cancelled",
-                        user_context={**user_context, "scope": task.get("scope")}, detail=detail,
-                        previous_reviews=task.get("previous_independent_reviews", []),
-                    )
-                    return validation, {}, []
+                    last_error = None
+                    # Independent review is a publication gate. A transient or
+                    # malformed response must not silently erase an otherwise
+                    # validated candidate. Retry once with a fresh model/context;
+                    # both attempts remain visible and consume the shared budget.
+                    for attempt in range(2):
+                        review_model = TeamModel(team, team.model_factory(),
+                                                 "review:" + candidate["id"] + f":{attempt + 1}")
+                        try:
+                            validation = review_packet(
+                                review_model, candidate, boundary, evidence, tools=None,
+                                cancelled=lambda: store.get(task_id)["status"] == "cancelled",
+                                user_context={**user_context, "scope": task.get("scope")}, detail=detail,
+                                previous_reviews=task.get("previous_independent_reviews", []),
+                            )
+                            validation["attempts"] = attempt + 1
+                            return validation, {}, []
+                        except (ModelOutputError, ModelRequestError, ValueError) as error:
+                            last_error = error
+                    raise last_error
 
                 for candidate in investigations:
                     if candidate["status"] != "supported":
@@ -454,6 +485,19 @@ def _run_task(store, task_id, model, tools, team=None):
                     report=report,
                     stop_reason="report_submitted",
                 )
+                final_task = store.get(task_id)
+                record_stage(store, task_id, "report_assembly", "completed", name="确定性报告组装",
+                             completed_units=1, total_units=1,
+                             model_calls=final_task.get("model_calls", 0),
+                             tokens=sum(row.get("total_tokens", 0) or 0
+                                        for row in final_task.get("model_requests", [])),
+                             metadata={"finding_count": len(report.get("findings", [])),
+                                       "deferred_count": len(report.get("coverage", {}).get("deferred", []))})
+                record_stage(store, task_id, "audit_execution", "completed", name="审计执行",
+                             completed_units=final_task.get("model_calls", 0),
+                             total_units=final_task.get("max_steps", 0),
+                             model_calls=final_task.get("model_calls", 0),
+                             stop_reason="report_submitted")
                 return
             name, args = parsed_action.tool, parsed_action.arguments
             try:
@@ -495,10 +539,10 @@ def _run_task(store, task_id, model, tools, team=None):
                     result = team.read_tool(name, args) if team else tools.call(name, args)
             except ValueError as error:
                 result = {"error": str(error)}
-            if name in ("read_chunk", "read_file"):
+            if name in READ_TOOL_ARGUMENTS:
                 if team:
                     team.collect_evidence(name, result, evidence)
-                for row in result.get("rows", []):
+                for row in iter_evidence_rows(name, result):
                     verified = CodeEvidence.from_read(row)
                     if verified.repository_id != task.get(
                         "repository_id"

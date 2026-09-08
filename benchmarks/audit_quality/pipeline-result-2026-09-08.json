@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "model": "glm-5.3-flash",
+  "cases": [
+    {
+      "case": "case-a",
+      "task_artifact": "data/audit-checks/01ddfb95fdcd49f68269c2b460f053e3",
+      "expected": "supported",
+      "observed": "supported",
+      "calls": 3,
+      "input_characters": 19775,
+      "total_tokens": 15418,
+      "request_seconds": 148.38,
+      "formal_findings": 1,
+      "independent_reviews": 1
+    },
+    {
+      "case": "case-b",
+      "task_artifact": "data/audit-checks/648b478b951c4a12a827194423feb43f",
+      "expected": "refuted",
+      "observed": "no_candidate",
+      "calls": 2,
+      "input_characters": 14626,
+      "total_tokens": 16159,
+      "request_seconds": 119.03,
+      "formal_findings": 0,
+      "false_positive": false
+    },
+    {
+      "case": "case-c",
+      "task_artifact": "data/audit-checks/3858b0fe6071411299ad598b36136a98",
+      "expected": "inconclusive",
+      "observed": "inconclusive",
+      "calls": 3,
+      "input_characters": 19258,
+      "total_tokens": 17267,
+      "request_seconds": 94.8,
+      "formal_findings": 0,
+      "inconclusive_paths": 2
+    }
+  ],
+  "metrics": {
+    "known_positive_recall": "1/1",
+    "known_positive_recall_percent": 100.0,
+    "negative_false_positives": "0/1",
+    "unknown_preservation": "1/1",
+    "strict_refuted_observability": "0/1"
+  },
+  "limitations": [
+    "Only one known-positive case is present, so 100% recall is not statistically representative.",
+    "The protected negative was filtered during path discovery rather than persisted as an explicit refuted path."
+  ]
+}

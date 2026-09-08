@@ -15,12 +15,14 @@ class RecordedAuditModel:
         task = self.store.get(self.task_id)
         record = {"call": task.get("model_calls", 0), "phase": task.get("phase"),
                   "input_characters": sum(len(message["content"]) for message in messages),
+                  "request_messages": messages,
                   "status": "started"}
         started = monotonic()
         try:
             result = self.model.next_action(messages)
             # 返回JSON不代表动作或安全判断已通过后续校验。
             record["status"] = "response_returned"
+            record["response_action"] = result
             return result
         except ModelOutputError as error:
             record.update(status="invalid_output", code=error.code)

@@ -11,8 +11,10 @@ from secval.models.agent_work import parse_assignment
 from secval.models.audit import EvidenceServiceError
 from secval.models.audit_contracts import CodeEvidence, ModelOutputError, ModelRequestError
 from secval.models.audit_scope import in_scope
+from secval.models.audit_tools import iter_evidence_rows
 from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context
+from secval.services.audit_stages import record_stage
 
 
 class TeamStopped(RuntimeError):
@@ -81,6 +83,7 @@ class AgentTeam:
         self.main_call_id = 0
         self.request_retries = {}
         self.seed_evidence = {}
+        self.seed_packets = []
         self.seed_events = []
         self.seed_complete = False
 
@@ -93,6 +96,7 @@ class AgentTeam:
         """
         if self.seed_events:
             return
+        record_stage(self.store, self.task_id, "entry_prefetch", "running", name="入口扫描与证据预取")
         try:
             listing = self.read_tool("list_files", {"offset": 0})
             self.seed_events.append({"tool": "list_files", "arguments": {"offset": 0},
@@ -112,8 +116,34 @@ class AgentTeam:
                 ordered = sorted(entries.get("rows", []),
                                  key=lambda item: (priority.get(item.get("kind"), 5),
                                                    item.get("path", ""), item.get("line", 0)))
-                paths = list(dict.fromkeys(item.get("path") for item in ordered if item.get("path")))[:4]
-                selected_rows = [{"path": path} for path in paths]
+                paths = list(dict.fromkeys(item.get("path") for item in ordered if item.get("path")))
+                selected_rows = [{"path": path} for path in paths[:4]]
+                # Keep every discovered entry in bounded packets.  The former
+                # [:4] truncation silently made the rest of a large repository
+                # undiscoverable even though find_entry_points had found it.
+                for offset in range(0, min(len(paths), 12)):
+                    packet = {}
+                    packet_total = 0
+                    for path in paths[offset:offset + 1]:
+                        result = self.read_tool("read_file", {"path": path})
+                        incoming = {}
+                        self.collect_evidence("read_file", result, incoming)
+                        size = sum(len(item.get("content", "")) for item in incoming.values())
+                        if packet_total + size > 6000:
+                            break
+                        packet_total += size
+                        packet.update(incoming)
+                    if packet:
+                        self.seed_packets.append({"id": f"entry-{offset + 1}",
+                                                  "evidence": packet,
+                                                  "paths": paths[offset:offset + 1]})
+                for number, path in enumerate(self.task.get("approved_config_paths", [])[:4], 1):
+                    result = self.read_tool("read_file", {"path": path})
+                    packet = {}
+                    self.collect_evidence("read_file", result, packet)
+                    if packet:
+                        self.seed_packets.append({"id": f"config-{number}", "evidence": packet,
+                                                  "paths": [path]})
             total = 0
             for row in selected_rows:
                 result = self.read_tool("read_file", {"path": row["path"]})
@@ -130,10 +160,24 @@ class AgentTeam:
             self.seed_complete = small_complete and len(self.seed_evidence) == len(rows) and all(
                 not item.get("truncated") for item in self.seed_evidence.values()
             )
+            if small_complete and self.seed_evidence:
+                self.seed_packets = [{"id": "complete", "evidence": deepcopy(self.seed_evidence),
+                                      "paths": [row.get("relative_path") for row in self.seed_evidence.values()]}]
+            record_stage(
+                self.store, self.task_id, "entry_prefetch", "completed", name="入口扫描与证据预取",
+                completed_units=len(self.seed_evidence), total_units=len(selected_rows),
+                tool_operations=len(self.seed_events),
+                new_evidence=len(self.seed_evidence),
+                metadata={"packet_characters": sum(len(row.get("content", ""))
+                                                    for row in self.seed_evidence.values()),
+                          "seed_complete": self.seed_complete},
+            )
         except (ValueError, EvidenceServiceError):
             # Prefetch is an optimization. Normal model-directed reads remain
             # available if the repository or evidence service cannot supply it.
             self.seed_evidence = {}
+            record_stage(self.store, self.task_id, "entry_prefetch", "failed", name="入口扫描与证据预取",
+                         error="入口预取不可用，回退到模型定向取证")
 
     def seed_packet(self):
         self.prepare_seed()
@@ -198,14 +242,31 @@ class AgentTeam:
                                        validation_resume=None)
                     self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
             return
-        if self.task.get("independent_baseline", True):
+        # A large-repository prefill run gets its independent judgement from the
+        # per-packet validator. Starting the legacy baseline here recreates the
+        # very 30K+ prompt loop this pipeline is intended to replace.
+        if self.task.get("independent_baseline", True) and not self.path_pipeline_enabled:
             self.submit("baseline", {"title": "独立基线审计", "question": self.task["objective"], "evidence_ids": []})
         # A complete bounded source packet already gives the parent enough data
         # to map a tiny repository. A third simultaneous model request adds cost
         # and provider tail latency without adding independent security review.
-        if not self.seed_complete:
-            self.submit("architecture", {"title": "独立架构分析", "question":
-                "确认实际入口、资产、信任边界和控制，追查资源的实际使用者；仅做架构分析，不冒充安全审阅。", "evidence_ids": []})
+        if self.seed_evidence or not self.seed_complete:
+            mode = "prefill_path_probe" if self.seed_evidence else None
+            packets = self.seed_packets or ([{"id": "priority", "evidence": self.seed_evidence, "paths": []}]
+                                            if self.seed_evidence else [])
+            if packets:
+                for packet in packets:
+                    self.submit("architecture", {"title": "入口路径预筛 · " + packet["id"], "question":
+                        "逐一检查本包全部入口，覆盖认证、授权、文件读写、命令执行、反序列化、注入、出站请求、数据暴露和配置安全面；输出所有可信Source→Hop→Sink路径及明确补证缺口。",
+                        "evidence_ids": []}, mode=mode, evidence=packet["evidence"])
+            else:
+                self.submit("architecture", {"title": "独立架构分析", "question":
+                    "确认实际入口、资产、信任边界和控制，追查资源的实际使用者；仅做架构分析，不冒充安全审阅。",
+                    "evidence_ids": []}, mode=None)
+
+    @property
+    def path_pipeline_enabled(self):
+        return bool(self.seed_evidence)
 
     def resume_for_validation(self):
         """主调查收尾时，把因预算保留暂停的子任务恢复一次，用保留额度完成结果。
@@ -234,22 +295,23 @@ class AgentTeam:
         self.changed.set()
         return True
 
-    def submit(self, role, assignment):
+    def submit(self, role, assignment, *, mode=None, evidence=None):
         from secval.services.agent_worker import run_worker
         self.check_running()
         with self.lock:
             task = self.store.get(self.task_id)
             workers = task.get("agent_tasks", [])
-            if len(workers) >= 12:
-                raise ValueError("本次最多12个子任务，请合并相关问题")
+            if len(workers) >= 16:
+                raise ValueError("本次最多16个子任务，请合并相关问题")
             for worker in workers:
                 if worker["role"] == role and worker["assignment"] == assignment:
                     return {"worker_id": worker["id"], "status": worker["status"], "existing": True}
             worker_id = f"agent-{len(workers) + 1}"
             workers.append({"id": worker_id, "role": role, "assignment": deepcopy(assignment),
                             "status": "queued", "calls": 0, "messages": [],
-                            "evidence": deepcopy(self.seed_evidence), "events": deepcopy(self.seed_events),
-                            "result": None, "stop_reason": None})
+                            "evidence": deepcopy(self.seed_evidence if evidence is None else evidence),
+                            "events": deepcopy(self.seed_events),
+                            "result": None, "stop_reason": None, **({"mode": mode} if mode else {})})
             self.store.update(self.task_id, agent_tasks=workers)
         self.futures[worker_id] = self.pool.submit(run_worker, self, worker_id)
         return {"worker_id": worker_id, "status": "queued"}
@@ -257,11 +319,14 @@ class AgentTeam:
     def request(self, model, messages, agent_id):
         self.check_running()
         is_review = agent_id.startswith("review:")
+        is_path_validation = agent_id.startswith("path-validation:")
+        is_path_builder = agent_id.startswith("path-finding:")
+        worker_mode = None if agent_id == "main" or is_review or is_path_validation or is_path_builder else self.worker(agent_id).get("mode")
         configure_tools = getattr(model, "set_available_read_tools", None)
         if configure_tools is not None:
             scoped = set(self.task.get("scope", {}).get("tools", []))
             focused = {
-                "list_files", "read_file", "read_chunk", "search_source",
+                "batch_evidence", "list_files", "read_file", "read_chunk", "search_source",
                 "hybrid_search", "find_entry_points", "find_code_callers",
                 "find_code_callees", "find_data_paths",
             }
@@ -269,7 +334,7 @@ class AgentTeam:
                 focused -= {"list_files", "read_file", "read_chunk"}
             elif self.seed_evidence:
                 focused -= {"list_files", "find_entry_points"}
-            configure_tools([] if is_review else scoped & focused)
+            configure_tools([] if is_review or is_path_validation or is_path_builder or worker_mode == "prefill_path_probe" else scoped & focused)
         configure_actions = getattr(model, "set_available_action_tools", None)
         if configure_actions is not None:
             if agent_id == "main":
@@ -285,6 +350,8 @@ class AgentTeam:
                 configure_actions(actions)
             elif is_review:
                 configure_actions({"submit_independent_review"})
+            elif is_path_validation or is_path_builder:
+                configure_actions(set())
             else:
                 configure_actions({"submit_worker_progress"})
         with self.lock:
@@ -301,7 +368,7 @@ class AgentTeam:
                 if worker is not None:
                     worker["calls"] += 1
                     self.store.update(self.task_id, agent_tasks=workers)
-            if agent_id != "main" and not is_review:
+            if agent_id != "main" and not is_review and not is_path_validation and not is_path_builder:
                 workers = task.get("agent_tasks", [])
                 worker = next(row for row in workers if row["id"] == agent_id)
                 if worker.get("validation_resume"):
@@ -315,6 +382,11 @@ class AgentTeam:
                         raise TeamStopped("reserved_for_main")
                     if worker["calls"] >= self.worker_call_limit():
                         raise TeamStopped("worker_step_limit")
+                    # The probe never explores with tools, but providers may
+                    # need bounded schema repair. Do not discard a whole surface
+                    # after one malformed JSON response.
+                    if worker_mode == "prefill_path_probe" and worker["calls"] >= 4:
+                        raise TeamStopped("prefill_probe_single_call")
                 worker["calls"] += 1
                 self.store.update(self.task_id, agent_tasks=workers)
             call_id = calls + 1
@@ -325,16 +397,22 @@ class AgentTeam:
                 self.main_call_id = call_id
             records = task.get("model_requests", [])
             records.append({"call": call_id, "agent_id": agent_id, "status": "started",
-                            "phase": "validation" if is_review else
+                            "phase": "validation" if is_review or is_path_validation or is_path_builder else
                                      (task.get("phase") if agent_id == "main" else worker["role"]),
                             "started_ms": round((monotonic() - self.started) * 1000),
-                            "input_characters": sum(len(m["content"]) for m in messages)})
+                            "input_characters": sum(len(m["content"]) for m in messages),
+                            "request_messages": messages})
             self.store.update(self.task_id, model_calls=call_id, model_requests=records)
         started = monotonic()
         status, code = "unexpected_failure", None
         try:
             result = model.next_action(messages)
             status = "response_returned"
+            with self.lock:
+                records = self.store.get(self.task_id).get("model_requests", [])
+                record = next(row for row in records if row["call"] == call_id)
+                record["response_action"] = result
+                self.store.update(self.task_id, model_requests=records)
             self.request_retries.pop(agent_id, None)
             return result
         except ModelOutputError as error:
@@ -342,11 +420,16 @@ class AgentTeam:
             raise
         except ModelRequestError:
             status = "request_failed"
+            if is_path_validation or is_path_builder:
+                # One packet is one bounded model request. A timeout is persisted
+                # as an incomplete validation instead of silently doubling cost.
+                raise
             # A single transport timeout must not discard an otherwise healthy
             # audit. The retry is a real, separately counted request and remains
             # bounded by the shared step/time budgets.
             retries = self.request_retries.get(agent_id, 0)
-            if retries < 1:
+            retry_limit = 2 if worker_mode == "prefill_path_probe" else 1
+            if retries < retry_limit:
                 self.request_retries[agent_id] = retries + 1
             else:
                 self.request_retries.pop(agent_id, None)
@@ -377,10 +460,8 @@ class AgentTeam:
             return self.tools.call(name, arguments)
 
     def collect_evidence(self, name, result, evidence):
-        if name not in ("read_file", "read_chunk"):
-            return
         incoming = {}
-        for row in result.get("rows", []):
+        for row in iter_evidence_rows(name, result):
             verified = CodeEvidence.from_read(row)
             if (verified.repository_id != self.task["repository_id"]
                     or verified.snapshot_id != self.task["snapshot_id"]
@@ -419,10 +500,86 @@ class AgentTeam:
             tasks = self.store.get(self.task_id).get("agent_tasks", [])
             row = next(item for item in tasks if item["id"] == worker_id)
             row["progress_results"] = records
-            self.store.update(self.task_id, agent_tasks=tasks)
+            sketches = self._merge_path_sketches(
+                self.store.get(self.task_id).get("path_sketches", []), progress, progress_id
+            )
+            from secval.services.path_validation_pipeline import build_validation_packets
+            self.store.update(self.task_id, agent_tasks=tasks, path_sketches=sketches,
+                              validation_packets=build_validation_packets(sketches))
         self.changed.set()
         return {"progress_id": progress_id, "saved": True,
                 "note": "阶段成果已保存；最终结果不要重复提交这些内容"}
+
+    def persist_path_sketches(self, worker_id, result):
+        """Persist probe output independently of parent delivery or final reporting."""
+        if not result.get("path_sketches"):
+            return
+        with self.lock:
+            task = self.store.get(self.task_id)
+            sketches = self._merge_path_sketches(task.get("path_sketches", []), result, worker_id)
+            from secval.services.path_validation_pipeline import build_validation_packets
+            self.store.update(self.task_id, path_sketches=sketches,
+                              validation_packets=build_validation_packets(sketches))
+            packets = self.store.get(self.task_id).get("validation_packets", [])
+            record_stage(self.store, self.task_id, "path_probe", "completed", name="一次性 Path Probe",
+                         completed_units=len(sketches), total_units=3,
+                         model_calls=1, metadata={"path_count": len(sketches)})
+            record_stage(self.store, self.task_id, "validation_grouping", "completed", name="验证包分组",
+                         completed_units=len(packets), total_units=len(packets),
+                         metadata={"packet_count": len(packets), "path_count": len(sketches)})
+        self.schedule_path_validations()
+
+    def schedule_path_validations(self):
+        from secval.services.path_validation_pipeline import run_validation_packet
+        for packet in self.store.get(self.task_id).get("validation_packets", []):
+            key = "path-validation:" + packet["id"]
+            if packet.get("status") == "queued" and key not in self.futures:
+                record_stage(self.store, self.task_id, "path_validation", "queued",
+                             scope_id=packet["id"], name="路径验证",
+                             completed_units=0, total_units=len(packet.get("path_ids", [])),
+                             metadata={"surface": packet.get("surface"),
+                                       "candidate_type": packet.get("candidate_type")})
+                self.futures[key] = self.pool.submit(run_validation_packet, self, packet["id"])
+
+    def persist_path_validation(self, packet_id, result, evidence):
+        with self.lock:
+            task = self.store.get(self.task_id)
+            packets = task.get("validation_packets", [])
+            next(row for row in packets if row["id"] == packet_id).update(status="completed", attempts=1)
+            validations = list(task.get("path_validations", []))
+            boundaries = list(task.get("security_boundaries", []))
+            investigations = list(task.get("investigations", []))
+            details = list(task.get("finding_detail_history", []))
+            for row in result["outcomes"]:
+                record = {**deepcopy(row), "packet_id": packet_id}
+                finding = record.pop("finding", None)
+                validations = [old for old in validations if old.get("path_id") != record["path_id"]]
+                validations.append(record)
+                sketch = next(item for item in task.get("path_sketches", []) if item["id"] == record["path_id"])
+                sketch["status"] = record["outcome"]
+                if finding:
+                    self._import_worker_findings({"findings": [finding]}, record["path_id"], evidence,
+                                                 boundaries, investigations, details)
+            self.store.update(self.task_id, validation_packets=packets, path_validations=validations,
+                              path_sketches=task.get("path_sketches", []), security_boundaries=boundaries,
+                              investigations=investigations, finding_detail_history=details)
+
+    @staticmethod
+    def _merge_path_sketches(existing, result, source_id):
+        sketches = deepcopy(existing)
+        for number, raw in enumerate(result.get("path_sketches", []), 1):
+            sketch_id = f"{source_id}:path-{number}"
+            if any(row.get("id") == sketch_id for row in sketches):
+                continue
+            identity = tuple(" ".join(str(raw.get(key, "")).lower().split())
+                             for key in ("candidate_type", "entry", "source", "sink"))
+            if any(tuple(" ".join(str(row.get(key, "")).lower().split())
+                         for key in ("candidate_type", "entry", "source", "sink")) == identity
+                   for row in sketches):
+                continue
+            sketches.append({**deepcopy(raw), "id": sketch_id, "status": "queued_for_validation",
+                             "source_id": source_id})
+        return sketches
 
     def pending(self):
         return any(not future.done() for future in self.futures.values())
@@ -440,6 +597,14 @@ class AgentTeam:
                 for row in task.get("agent_tasks", [])
             ):
                 break
+            self.changed.wait(1)
+        return self.progress()
+
+    def wait_for_all(self):
+        """Wait until discovery and every validation packet reach a terminal state."""
+        while self.pending():
+            self.check_running()
+            self.changed.clear()
             self.changed.wait(1)
         return self.progress()
 

@@ -31,3 +31,4 @@ docs/*
 !docs/audit-agent.md
 !docs/audit-scan-modes-design.md
 gpu-wheels
+node_modules/

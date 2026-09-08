@@ -1,6 +1,7 @@
 """三个审计阶段共用的只读工具定义；不声明尚未接入的分析能力。"""
 
 READ_TOOL_ARGUMENTS = {
+    "batch_evidence": {"operations"},
     "list_chunks": {"offset"},
     "search_text": {"text", "offset"},
     "find_symbol": {"text", "offset"},
@@ -20,6 +21,7 @@ READ_TOOL_ARGUMENTS = {
 }
 
 READ_TOOL_DESCRIPTIONS = {
+    "batch_evidence": "batch_evidence(operations)：一次执行最多12个独立只读取证动作；每项为{tool,arguments}，可批量read_file/read_chunk/search_source/hybrid_search及符号、调用、数据流和入口查询。禁止嵌套batch_evidence；逐项返回结果或错误，源码总正文最多36000字符。",
     "list_chunks": "list_chunks(offset=0)：列出固定索引视图中的块，每页20条。",
     "search_text": "search_text(text,offset=0)：索引正文短语匹配，每页20条，不是字面或正则搜索。",
     "find_symbol": "find_symbol(text,offset=0)：完整符号签名精确匹配，每页20条，不是调用图。",
@@ -39,10 +41,23 @@ READ_TOOL_DESCRIPTIONS = {
 }
 
 
+def iter_evidence_rows(tool_name, result):
+    """Yield read results from a single operation or the bounded batch wrapper."""
+    if not isinstance(result, dict):
+        return
+    if tool_name == "batch_evidence":
+        for item in result.get("items", []):
+            if isinstance(item, dict) and isinstance(item.get("result"), dict):
+                yield from iter_evidence_rows(item.get("tool"), item["result"])
+        return
+    if tool_name in {"read_file", "read_chunk"}:
+        yield from result.get("rows", [])
+
+
 def read_tool_prompt():
     """从同一份定义生成说明，减少基线、主调查与复核之间的偏差。"""
     lines = [READ_TOOL_DESCRIPTIONS[name] for name in READ_TOOL_ARGUMENTS]
-    lines.append('一次只返回一个合法JSON对象，例如：{"tool":"list_files","arguments":{"offset":0}}。')
+    lines.append('一次只返回一个合法JSON对象；需要多个文件或符号时优先使用batch_evidence，避免逐项消耗模型调用。')
     lines.append("读取可选start_line/end_line（从1开始，两端包含），不能与char_offset混用；按行超12000字符须缩小范围。")
     lines.append("使用返回的next_offset或next_char_offset续读；只能引用读取返回的evidence_id，不自行拼写。")
     lines.append("搜索结果是线索，不是已读证据；源码阅读不等于完成安全审计。")

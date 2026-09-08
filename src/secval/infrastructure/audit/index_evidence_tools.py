@@ -73,7 +73,58 @@ class EvidenceTools:
         except OpenSearchException:
             raise EvidenceServiceError("固定取证视图或搜索服务不可用；没有切换实时索引") from None
 
+    @staticmethod
+    def _limit_batch_content(result, remaining):
+        """Bound model-visible source while retaining verified evidence metadata."""
+        result = dict(result)
+        rows = []
+        used = 0
+        for original in result.get("rows", []):
+            row = dict(original)
+            content = row.get("content")
+            if isinstance(content, str):
+                kept = content[:max(0, remaining - used)]
+                if not kept:
+                    continue
+                row["content"] = kept
+                used += len(kept)
+                if len(kept) < len(content):
+                    row["truncated"] = True
+                    row["batch_content_truncated"] = True
+                    start_offset = row.get("char_offset", 0)
+                    end_offset = start_offset + len(kept)
+                    row["next_char_offset"] = end_offset
+                    row["end_char_offset"] = end_offset
+                    row["end_line"] = row.get("start_line", 1) + kept.removesuffix("\n").count("\n")
+                    if str(row.get("chunk_id", "")).startswith("file:"):
+                        row["evidence_id"] = f"{row['chunk_id']}:{start_offset}:{end_offset}"
+                    else:
+                        row["evidence_id"] = (
+                            f"{row['chunk_id']}:{row['content_sha256'][:12]}:{start_offset}:{end_offset}"
+                        )
+            rows.append(row)
+        if "rows" in result:
+            result["rows"] = rows
+        return result, used
+
     def _call(self, name, arguments):
+        if name == "batch_evidence":
+            from secval.models.audit_contracts import ToolAction
+            ToolAction.parse({"tool": name, "arguments": arguments})
+            items = []
+            content_budget = 36000
+            for operation in arguments["operations"]:
+                try:
+                    item_result = self._call(operation["tool"], operation["arguments"])
+                    item_result, used = self._limit_batch_content(item_result, content_budget)
+                    content_budget -= used
+                    items.append({"tool": operation["tool"], "arguments": operation["arguments"],
+                                  "result": item_result})
+                except (ValueError, EvidenceServiceError) as error:
+                    items.append({"tool": operation["tool"], "arguments": operation["arguments"],
+                                  "error": str(error)})
+            return {"items": items, "content_characters": 36000 - content_budget,
+                    "batch_note": "各项独立校验；错误不取消其他项。源码正文达到36000字符后截断，按返回定位补读。"}
         if name == "approve_config_files":
             if self.pit_id is not None or self.closed or self.approved_config_paths:
                 raise ValueError("取证开始后不能改变配置授权")
@@ -81,6 +132,7 @@ class EvidenceTools:
                 raise ValueError("配置授权参数不合法")
             self.approved_config_paths = validate_config_paths(arguments["paths"], self.scope_paths)
             return {"approved_config_paths": self.approved_config_paths}
+
         if name == "restrict_scope":
             if self.pit_id is not None or self.closed or self.scope_paths:
                 raise ValueError("取证开始后不能改变授权路径")
@@ -141,6 +193,8 @@ class EvidenceTools:
             if self.joern_client is not None:
                 scope["tools"].extend(["find_code_calls", "find_data_paths"])
                 scope["limitations"].append("Joern调用和数据流结果是静态分析线索，可能存在漏报或误报")
+            # The batch wrapper only exposes tools already authorized in this scope.
+            scope["tools"].insert(0, "batch_evidence")
             return scope
         if name == "hybrid_search":
             from secval.models.audit_contracts import ToolAction

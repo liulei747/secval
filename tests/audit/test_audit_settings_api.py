@@ -56,11 +56,12 @@ def test_audit_page_exposes_resume_budget_and_completion_state():
         page = client.get("/audit")
 
     assert page.status_code == 200
-    # 续跑复用同一组预算输入；保证页面请求体包含这些字段。
-    assert "max_steps:Number(el('steps').value)" in page.text
-    assert "max_seconds:Number(el('seconds').value)" in page.text
-    assert "从检查点续跑" in page.text
-    # 报告完成度有独立展示区域，并请求导出接口读取completion状态。
-    assert "报告收口状态" in page.text
-    assert "completion.pendingReasons" not in page.text or "未收口原因" in page.text
+    # 正式控制台复用新建页的预算字段，并提供显式续跑入口。
+    assert "max_steps:+$('#maxSteps').value" in page.text
+    assert "max_seconds:+$('#maxSeconds').value" in page.text
+    assert 'id="resumeAudit"' in page.text
+    assert "/resume" in page.text
+    # 报告收口作为真实阶段账本节点展示，并保留报告导出入口。
+    assert "报告收口" in page.text
+    assert "report_assembly" in page.text
     assert "/report" in page.text

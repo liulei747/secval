@@ -5,7 +5,7 @@ from dataclasses import asdict
 from time import monotonic
 
 from secval.models.audit_contracts import CodeEvidence, ModelOutputError, ToolAction
-from secval.models.audit_tools import READ_TOOL_ARGUMENTS, read_tool_prompt
+from secval.models.audit_tools import READ_TOOL_ARGUMENTS, iter_evidence_rows, read_tool_prompt
 from secval.models.read_coverage import read_coverage
 from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context
@@ -77,8 +77,8 @@ def run_baseline(store, task_id, model, tools, task, evidence, events, start):
             output = tools.call(action.tool, action.arguments)
         except ValueError as error:
             output = {"error": str(error)}
-        if action.tool in {"read_chunk", "read_file"}:
-            for row in output.get("rows", []):
+        if action.tool in READ_TOOL_ARGUMENTS:
+            for row in iter_evidence_rows(action.tool, output):
                 verified = CodeEvidence.from_read(row)
                 if (verified.repository_id, verified.snapshot_id) != (task["repository_id"], task["snapshot_id"]):
                     raise ValueError("基线证据超出任务范围")

@@ -1,7 +1,7 @@
 """单用户本机审计入口；不适合直接暴露公网。"""
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from secval.config.audit_settings import load_audit_settings
@@ -154,8 +154,9 @@ def get_markdown_report(task_id: str, request: Request):
     })
 
 
-@router.get("/audit", response_class=HTMLResponse)
 def audit_page():
+    from secval.web_api.audit_console import audit_console_html
+    return audit_console_html()
     return """<!doctype html><html lang="zh"><meta charset="utf-8">
 <title>Secval 只读审计实验</title><style>
 body{max-width:960px;margin:40px auto;font:16px system-ui;background:#f6f7fa;color:#243043}

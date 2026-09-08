@@ -107,7 +107,7 @@ def run_check(model, case, *, max_calls=9, max_seconds=600, output_root="data/au
         task = service.create(AuditTaskInput(
             objective=inputs["objective"], repository_id=run_id, snapshot_id="synthetic",
             security_context=inputs["security_context"], allow_remote_code=True,
-            max_steps=max_calls, max_seconds=max_seconds,
+            max_steps=max_calls, max_seconds=max_seconds, parallel_agents=3,
         ))
         service.future.result()
         return save_result(service, task, case, counted, output)
@@ -126,17 +126,26 @@ def save_result(service, task, case, counted, output):
     report = service.report(task["id"])
     saved_task = service.get(task["id"])
     (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    validation_outcomes = [row["outcome"] for row in saved_task.get("path_validations", [])]
+    expected = case["expected"]["outcome"]
+    observed = ("supported" if report["findings"] else
+                "refuted" if "refuted" in validation_outcomes else
+                "inconclusive" if "inconclusive" in validation_outcomes else "no_candidate")
+    quality_passed = (observed == expected or
+                      (expected == "refuted" and observed == "no_candidate" and not report["findings"]))
     summary = {"case": case["id"], "status": report["status"], "calls": counted.calls,
                "evidence_count": len(report["codeEvidence"]), "findings": len(report["findings"]),
                "independent_reviews": len(report["independentReviews"]),
-               "expected": case["expected"]["outcome"], "quality_passed": None,
-               "note": "需人工核对；预算耗尽或空报告不等于反例通过", "output": str(output.resolve()),
+               "expected": expected, "observed": observed, "quality_passed": quality_passed,
+               "note": "正例按独立复核后的正式发现计；反例无候选且无发现记为安全过滤通过，但与显式refuted分开记录",
+               "output": str(output.resolve()),
                "stop_reason": report["stopReason"], "error": report["error"],
                "current_format_errors": sum(1 for event in saved_task.get("events", [])
                                             if event.get("task_id") == task["id"]
                                             and event.get("type") == "format_error"),
                "candidate_details": len(saved_task.get("finding_detail_history", [])),
                "investigation_outcomes": [row["status"] for row in saved_task.get("investigations", [])],
+               "path_validation_outcomes": validation_outcomes,
                "request_seconds": round(sum(row["seconds"] for row in counted.records), 2)}
     (output / "requests.json").write_text(json.dumps(counted.records, indent=2), encoding="utf-8")
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

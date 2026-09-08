@@ -16,6 +16,7 @@ from secval.services.audit_checkpoint import restore_checkpoint
 from secval.services.audit_report import export_audit_report
 from secval.services.audit_runner import run_task
 from secval.services.audit_model_call import RecordedAuditModel
+from secval.services.audit_stages import record_stage
 from secval.services.agent_team import AgentTeam, TeamModel
 
 
@@ -100,6 +101,16 @@ class AuditService:
                     continuation["checkpoint"]["state"]["team_deliveries"] = continuation["team_deliveries"]
             task = self.store.create({**asdict(command), **continuation})
             task = self.store.update(task["id"], **continuation, scope=scope, source_inventory=inventory)
+            record_stage(
+                self.store, task["id"], "scope_freeze", "completed", name="范围冻结",
+                completed_units=4, total_units=4,
+                metadata={"repository_id": command.repository_id,
+                          "snapshot_id": command.snapshot_id,
+                          "scope_paths": list(command.scope_paths),
+                          "source_snapshot_id": scope.get("source_snapshot_id"),
+                          "index_run_id": scope.get("index_run_id")},
+            )
+            task = self.store.get(task["id"])
         except Exception:
             tools.close()
             raise

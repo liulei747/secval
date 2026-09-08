@@ -136,3 +136,16 @@ JavaScript/TypeScript静态CommonJS导入已解析：解构`require`等价命名
 - 多进程协调、源码采集并发硬化；当前仅面向本机单用户，不适合直接公开部署。
 
 不得把单元测试通过、模型返回报告或未发现漏洞描述为完整审计完成。真实合成验收仍在进行；不能据此声称与 Codex Security 等效。
+2026-09-08补充：大仓库调查新增`batch_evidence(operations)`，单次模型动作可组合最多12个文件/代码块读取、源码搜索、入口定位和调用/数据流追踪。每个子动作仍经过原工具契约与固定快照校验，单项参数或范围错误独立返回；整批源码正文硬限制为36K字符，超过部分不登记为已读证据。主调查、worker、独立基线和补充复核均能从批量结果提取真实evidence_id，旧批量消息也进入上下文压缩。该改造减少串行取证所需的模型往返，但尚未完成按安全面自动分包和无新增证据停止条件，因此不宣称已解决大项目效率问题。
+
+2026-09-08第二轮实验：参考Prefill流水线思路，大仓库已有入口预取证据时把架构worker切换为单次`prefill_path_probe`。该角色不开放读取工具、不生成finding或文件审阅，最多输出6条简短Source→Hop→Sink路径及正式验证所需缺口，后端限制为一次模型调用，且不增加并行度。同一JeeSite `modules/test` 53文件范围实测：Path Probe用1次请求、14,107输入字符、8,575 token、46.29秒返回4条路径假设；但完整任务仍因传统主调查连续两次120秒请求超时而失败。说明一次性路径预筛可行，尚未解决主调查接收、物化与验证瓶颈；下一步应让路径结果直接落入持久化候选队列，由后端调度短验证包，避免再交给长上下文主调查自由综合。
+
+2026-09-08第三轮实现：Path Probe改为输出独立`PathSketch`，包含九类主安全面加other兜底、受控candidate_type、Source/Hops/Sink、已见控制、补证需求和真实evidence_id。结果在worker返回时直接写入任务顶层，使用稳定ID并标记`queued_for_validation`，不依赖主调查交付；同根因、同安全面和同sink的路径由后端确定性合并成最多6条路径的`validation_packets`，共享证据与needs去重。一次性模型常见的hops/needs空值或单字符串由后端无歧义规范化，安全语义和证据引用仍严格拒绝。真实JeeSite格式验收以1次Probe请求持久化6条路径，取消测试任务后路径仍保留。当前验证包执行器和supported候选物化仍待接入，不能把queued包计作已验证漏洞。
+
+2026-09-08第三轮实验：新增严格`PathSketch`契约（surface、entry、source、hops、sink、control、hypothesis、needs、evidence_ids），probe完成时直接写入任务顶层`path_sketches`，分配稳定ID并标记`queued_for_validation`，不再依赖主调查交付。为适配无纠错对话的一次性请求，仅将hops/needs的null或单字符串确定性规范化为数组，安全面、字段集合和证据引用继续严格校验。JeeSite同范围实测单次请求输入14,169字符、10,398 token、60.81秒，持久化6条路径；随后主动取消仅用于格式验收的任务，确认取消后6条路径仍保留。下一步是后端消费该队列生成小型验证包。
+
+2026-09-08正式完整测试：任务`87f844ea2fab4de093cb38f74cdd43a0`在JeeSite5 `modules/test`（53文件、210索引块）完成一次性路径发现、分包独立验证和确定性报告闭环。共4次模型调用、33,143输入字符、19,463 token、模型请求累计146.15秒，墙钟110.79秒；1次Probe生成3条路径，3个验证包各调用一次且全部完成，结果均为inconclusive，0个正式发现。相较旧任务12次调用、186,535输入字符、69,820 token且未形成详情，调用下降66.7%、输入下降82.2%、token下降72.1%，并首次形成逐路径反证和具体证据缺口。任务状态为`needs_review`而非完整审计：本轮验证只使用预取的2个入口文件，没有按needs自动补读Service、ViewResolver和Shiro配置，因此不能把0发现解释为模块安全。正式测试中另发现并修正：大仓库不得同时启动旧主调查和旧基线；Probe限制3条和1400中文字符；验证超时不自动重复计费；验证异常必须落盘为failed。
+
+2026-09-08补证闭环正式测试：结构化needs已支持symbol_definition、callers、callees、data_path、config_lookup、route_guard、template_resolution、file_read和source_search；后端按类型确定性路由，先批量定位再批量读取，跨包保存完整证据但模型只接收有上限的增量视图。任务`020084ab79624dee941b993f9469ebde`在同一JeeSite范围以4次模型调用、42,896输入字符、19,541 token、75.13秒累计模型时间完成3条路径、3个补证包和3次验证。一个包补入2份新证据；另外两个包连续两轮无新增证据后以`two_rounds_without_new_evidence`停止。三条均为inconclusive，0正式发现；缺口具体落在ViewResolver、Shiro过滤链以及Page/orderBy到DAO SQL链。曾出现补证后把完整文件发送导致56K验证输入的回归，已改为完整证据仅后端保存、模型源码片段预算8K（加提示和元数据后目标约12K）。
+
+2026-09-08已知样本召回测试：`benchmarks/audit_quality`三例均走同一路径流水线。case-a缺少对象归属校验，3次调用生成1个正式发现并完成1次独立复核，正例召回1/1；case-b存在正确归属校验，2次调用、0发现、0误报，但Probe直接过滤而未留下显式refuted记录；case-c缺少AccessPolicy实现，3次调用保留2条inconclusive且0发现。当前100%召回仅有一个正例，不能外推为真实总体召回率。原始汇总见`benchmarks/audit_quality/pipeline-result-2026-09-08.json`。

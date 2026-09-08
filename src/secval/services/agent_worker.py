@@ -40,6 +40,15 @@ reviewed_files只登记完整阅读且确实做过安全检查的文件，每项
 保留反证和未知项；结果不是已验证漏洞，不要求一定发现漏洞。
 """ + "\n" + OUTCOME_GUIDANCE + "\n" + read_tool_prompt()
 
+PROBE_PROMPT = """你是一次性安全路径提取器。不得调用工具，不得输出Markdown，只返回一个JSON对象。
+最外层必须且只能是{\"result\":{...}}。result必须包含summary、unknowns、questions、reviewed_files、findings、path_sketches；
+questions、reviewed_files、findings固定为空数组。path_sketches最多12项，每项严格包含surface、candidate_type、entry、source、
+hops、sink、control、hypothesis、needs、evidence_ids。hops为最多3项字符串数组；needs为最多2项数组，每项严格为
+{kind,target,reason,required_for}，kind只允许symbol_definition/callers/callees/data_path/config_lookup/route_guard/
+template_resolution/file_read/source_search。evidence_ids只能复制输入证据ID。用户security_context中已明确的入口、攻击者能力、
+完整范围和不存在外部控制是给定前提，不再列为needs。逐一覆盖包内入口，不得只选择最明显的三项；
+没有可信路径时path_sketches为空。总输出12000字以内。"""
+
 
 def run_worker(team, worker_id):
     from secval.services.agent_team import TeamStopped
@@ -51,6 +60,8 @@ def run_worker(team, worker_id):
         context = {key: team.task.get(key) for key in
                    ("objective", "scope", "security_context", "supplied_threat_model")}
         context.update(role=worker["role"], assignment=worker["assignment"])
+        if worker.get("mode"):
+            context["execution_mode"] = worker["mode"]
         if evidence:
             context["prefetched_evidence"] = list(evidence.values())
             context["prefetch_instruction"] = ((
@@ -60,10 +71,28 @@ def run_worker(team, worker_id):
                 "以上是后端按入口、授权标记和安全边界预取的优先证据包。"
                 "先分析这些证据并提交阶段成果；只为明确的数据流缺口做定向补读，不重复枚举仓库。"
             ))
-        messages = [{"role": "system", "content": WORKER_PROMPT},
+        if worker.get("mode") == "prefill_path_probe":
+            context["prefill_instruction"] = (
+                "这是一个安全面的一次性Path Probe。禁止调用任何工具，立即返回result。findings、reviewed_files和questions必须为空；"
+                "逐一检查本包全部入口，使用path_sketches输出最多12项，每项严格包含surface、candidate_type、entry、source、hops、sink、control、"
+                "hypothesis、needs、evidence_ids。surface仅允许authentication/authorization/file/"
+                "command_execution/deserialization/injection/outbound_request/data_exposure/trust_boundary/other。"
+                "candidate_type从auth_bypass/session_flaw/object_level_authorization/function_level_authorization/"
+                "tenant_isolation/sql_injection/template_injection/expression_injection/command_injection/path_traversal/"
+                "unsafe_upload/unsafe_deserialization/ssrf/sensitive_data_exposure/message_trust/xxe/xss/jndi_injection/"
+                "open_redirect/jwt_verification_bypass/arbitrary_file_write/hardcoded_secret/security_misconfiguration/unknown中选择。"
+                "整个JSON控制在12000个中文字符内；每个文本字段只写一句，hops最多3项，needs最多2项。"
+                "needs只写正式验证前必须补齐的证据，每项严格为{kind,target,reason,required_for}；kind仅允许"
+                "symbol_definition/callers/callees/data_path/config_lookup/route_guard/template_resolution/file_read/source_search。"
+                "用户security_context已明确给定的攻击者能力、入口可达性、完整范围或不存在外部控制属于既定前提，"
+                "不得又把这些前提列为needs；needs只针对尚未提供的代码行为。"
+                "没有可信路径时返回空path_sketches，不为凑数猜测。"
+            )
+        messages = [{"role": "system", "content": PROBE_PROMPT if worker.get("mode") == "prefill_path_probe" else WORKER_PROMPT},
                     {"role": "user", "content": json.dumps(context, ensure_ascii=False)}]
     else:
-        messages[0] = {"role": "system", "content": WORKER_PROMPT}
+        messages[0] = {"role": "system", "content":
+                       PROBE_PROMPT if worker.get("mode") == "prefill_path_probe" else WORKER_PROMPT}
         messages.append({"role": "user", "content": "从已保存只读检查点继续，未完成请求不视为成功。"})
     errors = 0
     try:
@@ -92,11 +121,21 @@ def run_worker(team, worker_id):
                 reply = team.request(model, messages, worker_id)
                 team.check_running()
                 if isinstance(reply, dict) and set(reply) == {"result"}:
+                    if worker.get("mode") == "prefill_path_probe" and isinstance(reply["result"], dict):
+                        # Deterministic envelope normalization only; path semantics,
+                        # controlled enums and evidence references remain strict.
+                        reply["result"].setdefault("questions", [])
+                        reply["result"].setdefault("reviewed_files", [])
+                        reply["result"].setdefault("findings", [])
+                        reply["result"].setdefault("path_sketches", [])
+                        if reply["result"].get("unknowns") == []:
+                            reply["result"]["unknowns"] = ["未声明额外未知项"]
                     result = parse_work_result(reply["result"], evidence)
                     if worker["role"] == "architecture" and (
                         result["reviewed_files"] or result.get("findings")
                     ):
                         raise ModelOutputError("架构分析不得提交安全审阅或漏洞候选")
+                    team.persist_path_sketches(worker_id, result)
                     team.update_worker(worker_id, status="completed", result=result,
                                        evidence=evidence, messages=messages)
                     return
@@ -107,8 +146,23 @@ def run_worker(team, worker_id):
                 errors += 1
                 if errors >= 3:
                     raise
-                messages.append({"role": "user", "content": "格式错误：" + str(error)})
-                team.update_worker(worker_id, messages=messages, evidence=evidence)
+                if worker.get("mode") == "prefill_path_probe":
+                    compact_rows = []
+                    for row in list(evidence.values())[:4]:
+                        compact_rows.append({key: row.get(key) for key in
+                                             ("evidence_id", "chunk_id", "relative_path", "start_line", "end_line")}
+                                            | {"content": row.get("content", "")[:1800]})
+                    repair = {"objective": team.task.get("objective"),
+                              "security_context": team.task.get("security_context"),
+                              "evidence": compact_rows,
+                              "error": str(error)}
+                    messages = [{"role": "system", "content": PROBE_PROMPT},
+                                {"role": "user", "content": json.dumps(repair, ensure_ascii=False)
+                                 + "\n修复格式；只返回result，保留全部可信路径，最多12条、6000字以内。"}]
+                else:
+                    messages.append({"role": "user", "content": "格式错误：" + str(error)})
+                team.update_worker(worker_id, messages=messages, evidence=evidence,
+                                   last_format_error=str(error))
                 continue
             errors = 0
             try:
@@ -151,14 +205,15 @@ def run_worker(team, worker_id):
 
 def _merge_progress_results(records):
     """Combine validated progress records into one backward-compatible result."""
-    summaries, questions, unknowns, reviewed_files, findings = [], [], [], [], []
+    summaries, questions, unknowns, reviewed_files, findings, path_sketches = [], [], [], [], [], []
     for record in records:
         result = record.get("result") or {}
         summary = result.get("summary")
         if summary and summary not in summaries:
             summaries.append(summary)
         for key, target in (("questions", questions), ("unknowns", unknowns),
-                            ("reviewed_files", reviewed_files), ("findings", findings)):
+                            ("reviewed_files", reviewed_files), ("findings", findings),
+                            ("path_sketches", path_sketches)):
             for item in result.get(key, []):
                 if item not in target:
                     target.append(item)
@@ -172,4 +227,5 @@ def _merge_progress_results(records):
         "unknowns": unknowns,
         "reviewed_files": reviewed_files,
         "findings": findings,
+        "path_sketches": path_sketches,
     }

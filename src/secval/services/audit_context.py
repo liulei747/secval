@@ -113,6 +113,7 @@ def _compact_read_pairs(messages, keep_recent):
         except (TypeError, ValueError):
             continue
         if not isinstance(action, dict) or action.get("tool") not in {
+            "batch_evidence",
             "read_file", "read_chunk", "list_files", "list_chunks", "search_text",
             "search_source", "hybrid_search", "find_symbol", "find_entry_points",
             "find_code_relations", "find_code_callers", "find_code_callees",

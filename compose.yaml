@@ -1,6 +1,20 @@
 name: secval
 
 services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: secval-frontend
+    ports:
+      - "127.0.0.1:8080:80"
+    networks:
+      - services
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -161,7 +175,8 @@ services:
         --server-auth-password "$$(cat /run/secrets/joern_password)"
     environment:
       # Joern会长期保留CPG和Scala REPL状态；2G在连续多项目分析后已经实测OOM。
-      - JAVA_OPTS=-Xmx4G
+      - JAVA_OPTS=-Xms1G -Xmx8G -XX:+UseG1GC
+      - JAVA_TOOL_OPTIONS=-Xms1G -Xmx8G -XX:+UseG1GC
     volumes:
       - joern-inputs:/joern-inputs:ro
       - joern-workspace:/app/workspace
