@@ -45,3 +45,25 @@ def test_record_receipt_keeps_identity_without_repeating_analysis():
 ])
 def test_reads_progress_and_errors_are_not_shortened(name, result):
     assert tool_reply_for_model(name, result) == result
+
+
+def test_old_read_source_is_projected_to_reread_location():
+    action = {"tool": "read_file", "arguments": {"path": "src/app.py"}}
+    row = {"evidence_id": "file-1:0:40000", "chunk_id": "file-1",
+           "relative_path": "src/app.py", "start_line": 1, "end_line": 900,
+           "content_sha256": "a" * 64, "content": "x" * 40000}
+    messages = [
+        {"role": "system", "content": "audit"},
+        {"role": "assistant", "content": json.dumps(action)},
+        {"role": "user", "content": "工具数据：" + json.dumps({"rows": [row]})},
+        {"role": "user", "content": "next"},
+        {"role": "assistant", "content": "recent"},
+        {"role": "user", "content": "continue"},
+    ]
+
+    result = compact_context(messages, threshold=1000, keep_recent=3)
+
+    assert "x" * 100 not in result[2]["content"]
+    assert "file-1:0:40000" in result[2]["content"]
+    assert "src/app.py" in result[2]["content"]
+    assert len(result[2]["content"]) < 1000

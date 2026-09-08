@@ -19,9 +19,15 @@ WORKER_PROMPT = """你是只读安全审计子调查员，独立完成分派任�
 需要工具时用tool和arguments两个字段；完成时只用result一个字段。
 查清一组候选、反证或未决问题后，立即调用submit_worker_progress提交；不要等到最终结果才一次性输出。
 提交参数与result字段相同。提交成功会返回progress_id；最终result只写尚未提交的新增内容，避免重复。
-合法的最小结束示例：{"result":{"summary":"已检查的范围和结论","questions":[],"unknowns":["尚未验证的前提"],"reviewed_files":[]}}。
+合法的最小结束示例：{"result":{"summary":"已检查的范围和结论","questions":[],"unknowns":["尚未验证的前提"],"reviewed_files":[],"findings":[]}}。
 有证据支持的候选、反证结论或未决问题必须放入questions，不得只写在summary里。
-result包含summary字符串、unknowns非空字符串数组、questions数组、reviewed_files数组。
+result包含summary字符串、unknowns非空字符串数组、questions数组、reviewed_files数组，
+并可包含findings数组。确认存在控制失效时应直接提交完整finding，不要只写成question。
+findings每项包含boundary、investigation、review、detail；四者分别使用主流程
+record_boundary、record_investigation、review_investigation、record_finding_detail的参数结构，
+但investigation省略boundary_id，review和detail省略investigation_id，编号由后端生成。
+findings只放review.outcome=supported且有完整攻击路径、根因、反证、修复建议的候选；
+证据不足、被反证的问题继续放questions。后端会进行一次独立复核后才生成正式发现。
 questions每项必须包含question、outcome、assessment、counterevidence、unknowns、evidence_ids。
 outcome只允许supported/refuted/inconclusive；描述为简洁可核对的结论，不输出私有思考过程。
 evidence_ids只能引用本任务实际读取的证据，不自己编造编号、代码或行号。
@@ -45,6 +51,12 @@ def run_worker(team, worker_id):
         context = {key: team.task.get(key) for key in
                    ("objective", "scope", "security_context", "supplied_threat_model")}
         context.update(role=worker["role"], assignment=worker["assignment"])
+        if evidence:
+            context["prefetched_evidence"] = list(evidence.values())
+            context["prefetch_instruction"] = (
+                "以上证据是后端已校验的完整小仓库源码包，可直接引用evidence_id。"
+                "不要重新枚举或读取这些文件；第一轮直接分析并提交完整finding、question或result。"
+            )
         messages = [{"role": "system", "content": WORKER_PROMPT},
                     {"role": "user", "content": json.dumps(context, ensure_ascii=False)}]
     else:
@@ -58,13 +70,30 @@ def run_worker(team, worker_id):
             team.check_running()
             if context_size(messages) > 95000:
                 raise TeamStopped("context_limit")
+            # Reserve the final calls for a durable result. Previously workers kept
+            # exploring until request() rejected the next call, leaving result=null.
+            current = team.worker(worker_id)
+            remaining = team.worker_call_limit() - current.get("calls", 0)
+            if remaining <= 2 and not current.get("completion_nudged"):
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "子任务调用额度即将耗尽。立即停止扩大搜索范围。"
+                        "使用已读证据提交submit_worker_progress；如果已经提交全部新增成果，"
+                        "立即返回result。supported问题必须明确写入questions，不能只放在summary。"
+                    ),
+                })
+                team.update_worker(worker_id, completion_nudged=True,
+                                   messages=messages, evidence=evidence)
             try:
                 reply = team.request(model, messages, worker_id)
                 team.check_running()
                 if isinstance(reply, dict) and set(reply) == {"result"}:
                     result = parse_work_result(reply["result"], evidence)
-                    if worker["role"] == "architecture" and result["reviewed_files"]:
-                        raise ModelOutputError("架构分析不得计入完整安全审阅")
+                    if worker["role"] == "architecture" and (
+                        result["reviewed_files"] or result.get("findings")
+                    ):
+                        raise ModelOutputError("架构分析不得提交安全审阅或漏洞候选")
                     team.update_worker(worker_id, status="completed", result=result,
                                        evidence=evidence, messages=messages)
                     return
@@ -94,9 +123,19 @@ def run_worker(team, worker_id):
             messages = compact_context(messages)
             team.save_worker_step(worker_id, messages, evidence, action, result)
     except TeamStopped as error:
-        team.update_worker(worker_id, status="stopped", stop_reason=error.reason)
+        # Stage results are validated and durable. If the hard budget arrives before
+        # a final response, expose those results instead of discarding them.
+        current = team.worker(worker_id)
+        progress = current.get("progress_results", [])
+        partial = _merge_progress_results(progress) if progress else None
+        team.update_worker(worker_id, status="stopped", stop_reason=error.reason,
+                           result=partial, partial_result=bool(partial))
     except ModelRequestError:
-        team.update_worker(worker_id, status="failed", stop_reason="model_request_failed")
+        current = team.worker(worker_id)
+        progress = current.get("progress_results", [])
+        partial = _merge_progress_results(progress) if progress else None
+        team.update_worker(worker_id, status="failed", stop_reason="model_request_failed",
+                           result=partial, partial_result=bool(partial))
     except ModelOutputError as error:
         team.update_worker(worker_id, status="failed", stop_reason="model_output_" + error.code)
     except EvidenceServiceError:
@@ -105,3 +144,29 @@ def run_worker(team, worker_id):
         team.update_worker(worker_id, status="failed", stop_reason="worker_failed")
     finally:
         team.changed.set()
+
+
+def _merge_progress_results(records):
+    """Combine validated progress records into one backward-compatible result."""
+    summaries, questions, unknowns, reviewed_files, findings = [], [], [], [], []
+    for record in records:
+        result = record.get("result") or {}
+        summary = result.get("summary")
+        if summary and summary not in summaries:
+            summaries.append(summary)
+        for key, target in (("questions", questions), ("unknowns", unknowns),
+                            ("reviewed_files", reviewed_files), ("findings", findings)):
+            for item in result.get(key, []):
+                if item not in target:
+                    target.append(item)
+    if not summaries:
+        return None
+    if not unknowns:
+        unknowns.append("子任务在最终结果前达到预算上限；此结果由已提交阶段成果合并")
+    return {
+        "summary": "；".join(summaries),
+        "questions": questions,
+        "unknowns": unknowns,
+        "reviewed_files": reviewed_files,
+        "findings": findings,
+    }

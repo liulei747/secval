@@ -81,7 +81,10 @@ class ToolAction:
     @classmethod
     def parse(cls, raw):
         allowed = {
-            "submit_worker_progress": {"summary", "questions", "unknowns", "reviewed_files"},
+            "submit_audit_report": {"summary", "hypotheses", "unknowns"},
+            "submit_independent_review": {"investigation_id", "outcome", "assessment",
+                                            "counterevidence", "limitations", "evidence_ids"},
+            "submit_worker_progress": {"summary", "questions", "unknowns", "reviewed_files", "findings"},
             "start_investigator": {"title", "question", "evidence_ids"},
             "team_progress": set(),
             "wait_for_workers": set(),

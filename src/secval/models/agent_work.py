@@ -34,8 +34,9 @@ def parse_assignment(arguments, evidence):
 
 
 def parse_work_result(raw, evidence):
-    if not isinstance(raw, dict) or set(raw) != {"summary", "questions", "unknowns", "reviewed_files"}:
-        raise ModelOutputError("子任务结果需要summary、questions、unknowns、reviewed_files")
+    base = {"summary", "questions", "unknowns", "reviewed_files"}
+    if not isinstance(raw, dict) or not base <= set(raw) or set(raw) - base - {"findings"}:
+        raise ModelOutputError("子任务结果需要summary、questions、unknowns、reviewed_files，可选findings")
     require_text(raw["summary"], "summary")
     require_strings(raw["unknowns"], "unknowns")
     if not isinstance(raw["questions"], list) or len(raw["questions"]) > 12:
@@ -56,7 +57,36 @@ def parse_work_result(raw, evidence):
         raise ModelOutputError("reviewed_files最多20项")
     for review in raw["reviewed_files"]:
         parse_file_review(review, evidence)
+    findings = raw.get("findings", [])
+    if not isinstance(findings, list) or len(findings) > 8:
+        raise ModelOutputError("findings必须为最多8项的数组")
+    for finding in findings:
+        parse_worker_finding(finding, evidence)
     import json
     if len(json.dumps(raw, ensure_ascii=False)) > 18000:
         raise ModelOutputError("子任务结果过长，请精简描述，不删除反证和未知项")
+    return raw
+
+
+def parse_worker_finding(raw, evidence):
+    """Validate a complete worker candidate without trusting worker-generated IDs."""
+    fields = {"boundary", "investigation", "review", "detail"}
+    if not isinstance(raw, dict) or set(raw) != fields:
+        raise ModelOutputError("worker finding需要boundary、investigation、review、detail")
+    from dataclasses import asdict
+    from secval.models.security_boundary import SecurityBoundary
+    from secval.models.investigation import Investigation
+    from secval.models.investigation_review import InvestigationReview
+    from secval.models.finding_detail import parse_finding_detail
+
+    boundary = {**asdict(SecurityBoundary.parse(raw["boundary"], evidence)), "id": "worker-boundary"}
+    investigation_raw = {**raw["investigation"], "boundary_id": boundary["id"]}
+    investigation = {**asdict(Investigation.parse(investigation_raw, [boundary], evidence)),
+                     "id": "worker-investigation"}
+    review_raw = {**raw["review"], "investigation_id": investigation["id"]}
+    review = InvestigationReview.parse(review_raw, [investigation], evidence)
+    if review.outcome != "supported":
+        raise ModelOutputError("findings只接受supported候选；其他结论放入questions")
+    detail_raw = {**raw["detail"], "investigation_id": investigation["id"]}
+    parse_finding_detail(detail_raw, [investigation], evidence)
     return raw

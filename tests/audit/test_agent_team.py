@@ -18,6 +18,7 @@ from secval.models.audit import AuditTaskInput
 from secval.models.audit_contracts import ModelOutputError, ModelRequestError
 from secval.models.agent_work import parse_work_result
 from secval.services.agent_team import AgentTeam, TeamStopped
+from secval.services.agent_worker import _merge_progress_results
 from secval.services.audit_service import AuditService
 from tests.audit.report_only_model import ReportOnlyModel
 from secval.services.audit_report import export_audit_report
@@ -782,7 +783,9 @@ def test_failed_worker_can_redeliver_after_resume(tmp_path):
         assert len(task["team_deliveries"]) == 2
         assert task["baseline"]["status"] == "submitted_partial"
         assert [role for is_resumed, role in seen if is_resumed] == ["baseline"]
-        assert task["agent_tasks"][0]["prior_calls"] == 1
+        # The initial worker gets one bounded transport retry before its durable
+        # failure is resumed as a child task.
+        assert task["agent_tasks"][0]["prior_calls"] == 2
     finally:
         service.close()
 
@@ -879,3 +882,77 @@ def test_team_requires_bound_source_before_any_model_call(tmp_path):
         assert tools.close.call_count == 1
     finally:
         service.close()
+
+
+def test_worker_call_limit_is_shared_by_request_and_completion_nudge(tmp_path):
+    team, _, _ = make_team(tmp_path, max_steps=60)
+    try:
+        assert team.worker_call_limit() == 5
+        team.task["max_steps"] = 9
+        assert team.worker_call_limit() == 3
+    finally:
+        team.close()
+
+
+def test_progress_results_survive_worker_budget_stop():
+    first = {
+        "id": "agent-1:progress-1",
+        "result": result([question(outcome="supported")]),
+    }
+    second = {
+        "id": "agent-1:progress-2",
+        "result": result([question(outcome="inconclusive")]),
+    }
+
+    merged = _merge_progress_results([first, second])
+
+    assert merged is not None
+    assert len(merged["questions"]) == 2
+    assert merged["questions"][0]["outcome"] == "supported"
+    assert merged["unknowns"]
+    assert first["result"]["summary"] in merged["summary"]
+
+
+def test_complete_worker_finding_is_imported_into_canonical_ledgers(tmp_path):
+    team, store, task_id = make_team(tmp_path, max_steps=40)
+    row = demo_row()
+    detail = candidate_detail()
+    detail.pop("investigation_id")
+    worker_finding = {
+        "boundary": {
+            "entry": "fetch", "attacker_control": "order id", "asset": "order",
+            "trust_transition": "user to order service", "expected_control": "owner check",
+            "observed_control": "no owner comparison before return", "unknowns": ["runtime not tested"],
+            "evidence_ids": ["read-1"],
+        },
+        "investigation": {
+            "question": "Can another user read the order", "control_to_check": "owner check",
+            "counterevidence": "upstream guard not supplied", "next_check": "independent review",
+            "unknowns": ["runtime not tested"], "evidence_ids": ["read-1"],
+        },
+        "review": {
+            "outcome": "supported", "assessment": "source supports missing owner check",
+            "counterevidence": "no caller evidence", "limitations": ["static review"],
+            "evidence_ids": ["read-1"],
+        },
+        "detail": detail,
+    }
+    worker_result = {**result([]), "findings": [worker_finding]}
+    store.update(task_id, agent_tasks=[{
+        "id": "agent-1", "role": "investigator", "status": "completed",
+        "result": worker_result, "evidence": {"read-1": row}, "events": [],
+    }])
+    messages, evidence, file_reviews = [], {}, []
+    boundaries, investigations, details = [], [], []
+    try:
+        assert team.deliver(messages, evidence, file_reviews, boundaries,
+                            investigations, details) == 1
+        assert boundaries[0]["id"] == "boundary-1"
+        assert investigations[0]["status"] == "supported"
+        assert investigations[0]["reviews"][0]["method"] == "worker_static_candidate"
+        assert details[0]["investigation_id"] == "investigation-1"
+        assert store.get(task_id)["finding_detail_history"][0]["worker_candidate_id"].endswith(
+            ":finding-1"
+        )
+    finally:
+        team.close()

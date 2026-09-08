@@ -139,6 +139,57 @@ def test_native_tool_call_is_converted_to_internal_action():
     assert read_file["function"]["parameters"]["required"] == ["path"]
 
 
+def test_native_finding_action_is_declared_and_converted():
+    arguments = {
+        "investigation_id": "investigation-1", "title": "IDOR", "summary": "missing owner check",
+        "rootCause": {"summary": "missing check", "evidenceRefs": ["e1"]},
+        "attackPath": {
+            "summary": "cross-user read", "evidenceRefs": ["e1"],
+            "dataflow": {"summary": "id to lookup", "source": "path", "transformations": [],
+                         "sink": "lookup", "outcome": "record", "evidenceRefs": ["e1"]},
+            "reachability": {"summary": "authenticated caller", "attacker": "user",
+                             "entrypoint": "GET", "preconditions": ["known id"],
+                             "outcome": "record", "evidenceRefs": ["e1"]},
+            "impact": {"level": "high", "rationale": "privacy"},
+            "likelihood": {"level": "medium", "rationale": "id needed"},
+            "limitations": ["static review"],
+        },
+        "severity": {"level": "high", "rationale": "cross-user access"},
+        "confidence": {"level": "high", "rationale": "direct code"},
+        "remediation": "check ownership", "remediationTests": ["cross-user request denied"],
+        "preventiveControls": ["central authorization"],
+        "evidenceNotes": [{"evidence_id": "e1", "role": "root_control", "explanation": "lookup"}],
+        "ruleId": "idor", "taxonomy": {"category": "authorization", "cwe": ["CWE-639"]},
+        "root_control": "e1",
+    }
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.read.return_value = json.dumps({"choices": [{"message": {"tool_calls": [{
+        "id": "call-detail", "type": "function",
+        "function": {"name": "record_finding_detail", "arguments": json.dumps(arguments)},
+    }]}}]}).encode()
+    model = AuditModel("https://example.invalid", "secret", "test", tool_protocol="native")
+    model.set_available_read_tools([])
+    model.set_available_action_tools(["record_finding_detail"])
+    with patch("secval.infrastructure.audit.api_audit_model.urlopen", return_value=response) as send:
+        assert model.next_action([]) == {"tool": "record_finding_detail", "arguments": arguments}
+    body = json.loads(send.call_args.args[0].data)
+    detail = body["tools"][0]["function"]
+    assert detail["name"] == "record_finding_detail"
+    assert "attackPath" in detail["parameters"]["required"]
+
+
+def test_native_main_and_review_require_a_tool_call():
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.read.return_value = b'{"choices":[{"message":{"content":"{}"}}]}'
+    model = AuditModel("https://example.invalid", "secret", "test", tool_protocol="native")
+    model.set_available_action_tools(["submit_audit_report"])
+    with patch("secval.infrastructure.audit.api_audit_model.urlopen", return_value=response) as send:
+        model.next_action([])
+    assert json.loads(send.call_args.args[0].data)["tool_choice"] == "required"
+
+
 def test_native_tool_result_uses_tool_call_id_on_next_request():
     first_response = MagicMock()
     first_response.__enter__.return_value = first_response
@@ -220,7 +271,7 @@ def test_native_restart_does_not_restore_unavailable_tool():
     assert model._messages_for_request(messages) == messages
 
 
-def test_native_mode_rejects_multiple_tool_calls():
+def test_native_mode_serializes_multiple_tool_calls_from_provider():
     response = MagicMock()
     response.__enter__.return_value = response
     call = {"id": "one", "type": "function",
@@ -229,10 +280,10 @@ def test_native_mode_rejects_multiple_tool_calls():
         "message": {"content": None, "tool_calls": [call, {**call, "id": "two"}]},
     }]}).encode()
     with patch("secval.infrastructure.audit.api_audit_model.urlopen", return_value=response):
-        with pytest.raises(ModelOutputError, match="每轮只允许一个"):
-            AuditModel(
-                "https://example.invalid", "secret", "test", tool_protocol="native"
-            ).next_action([])
+        result = AuditModel(
+            "https://example.invalid", "secret", "test", tool_protocol="native"
+        ).next_action([])
+    assert result == {"tool": "list_files", "arguments": {}}
 
 
 def test_native_mode_cannot_be_combined_with_streaming():

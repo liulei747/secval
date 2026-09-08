@@ -52,3 +52,10 @@ class RecordedAuditModel:
         configure = getattr(self.model, "set_available_read_tools", None)
         if configure is not None:
             configure(tool_names)
+
+    def set_available_action_tools(self, tool_names):
+        """把当前角色的结构化写入动作传给实际模型适配器。"""
+
+        configure = getattr(self.model, "set_available_action_tools", None)
+        if configure is not None:
+            configure(tool_names)

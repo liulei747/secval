@@ -46,6 +46,9 @@ def review_evidence_matches(review, evidence):
 def review_packet(model, investigation, boundary, evidence, *, tools=None,
                   before_request=None, cancelled=None, on_tool=None, user_context=None, detail=None,
                   previous_reviews=None):
+    configure_actions = getattr(model, "set_available_action_tools", None)
+    if configure_actions is not None:
+        configure_actions(set())
     refs = list(dict.fromkeys([*boundary["evidence_ids"], *investigation["evidence_ids"],
                               *(investigation.get("reviews") or [{}])[-1].get("evidence_ids", [])]))
     selected = {ref: evidence[ref] for ref in refs}
@@ -111,6 +114,22 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
             raise ValueError("复核已取消")
         if isinstance(response, dict) and "tool" in response:
             action = ToolAction.parse(response)
+            if action.tool == "submit_independent_review":
+                try:
+                    review = InvestigationReview.parse(action.arguments, [investigation], selected)
+                except ModelOutputError as error:
+                    messages.extend([
+                        {"role": "assistant", "content": json.dumps(response, ensure_ascii=False)},
+                        {"role": "user", "content": "复核输出无效：" + str(error)
+                         + "。请引用给定源码，明确判断根因、可达性、影响、反证和具体限制后重新提交。"},
+                    ])
+                    continue
+                return {**asdict(review), "method": "independent_context_packet_review",
+                        "input_sha256": input_sha256, "input_identity_version": 1,
+                        "evidence_fingerprints": evidence_fingerprints(selected),
+                        "detail_sha256": detail_digest(detail) if detail is not None else None,
+                        "independent_source_exploration": reads > 0,
+                        "additional_evidence_reads": reads, "dynamic_validation": False}
             if tools is None or action.tool not in READ_TOOL_ARGUMENTS:
                 raise ValueError("复核工具不允许")
             try:
@@ -130,7 +149,15 @@ def review_packet(model, investigation, boundary, evidence, *, tools=None,
             messages.extend([{"role": "assistant", "content": json.dumps(response, ensure_ascii=False)},
                              {"role": "user", "content": "不可信工具数据：" + json.dumps(result, ensure_ascii=False)}])
             continue
-        review = InvestigationReview.parse(response, [investigation], selected)
+        try:
+            review = InvestigationReview.parse(response, [investigation], selected)
+        except ModelOutputError as error:
+            messages.extend([
+                {"role": "assistant", "content": json.dumps(response, ensure_ascii=False)},
+                {"role": "user", "content": "复核输出无效：" + str(error)
+                 + "。请引用给定源码，明确判断根因、可达性、影响、反证和具体限制后重新提交。"},
+            ])
+            continue
         return {**asdict(review), "method": "independent_context_packet_review",
                 "input_sha256": input_sha256, "input_identity_version": 1,
                 "evidence_fingerprints": evidence_fingerprints(selected),

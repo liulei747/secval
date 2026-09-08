@@ -109,6 +109,17 @@ def _run_task(store, task_id, model, tools, team=None):
     configure_tools = getattr(model, "set_available_read_tools", None)
     if configure_tools is not None:
         configure_tools(task.get("scope", {}).get("tools", []))
+    configure_actions = getattr(model, "set_available_action_tools", None)
+    if configure_actions is not None:
+        actions = {
+            "record_boundary", "record_investigation", "review_investigation",
+            "record_finding_detail", "record_file_review", "record_threat_model",
+            "submit_audit_report",
+        }
+        if team:
+            actions.update({"start_investigator", "team_progress", "wait_for_workers",
+                            "read_worker_result", "link_worker_questions"})
+        configure_actions(actions)
     store.update(task_id, status="running", phase="investigation", schema_version=3,
                  read_coverage=read_coverage(task.get("evidence", {})))
     messages = [
@@ -156,8 +167,17 @@ def _run_task(store, task_id, model, tools, team=None):
             # 先保存主检查点再启动工作者，重启不会丢失任务边界。
             store.update(task_id, checkpoint=checkpoint(messages, store.get(task_id)))
             team.start()
+            seeded, seed_events = team.seed_packet()
+            if seeded:
+                evidence.update(seeded)
+                events.extend(seed_events)
+                messages.append({"role": "user", "content": "后端预取的小仓库完整源码证据包："
+                                 + json.dumps(list(seeded.values()), ensure_ascii=False)
+                                 + "。这些证据可直接引用；不要重新枚举或读取，立即分析控制并记录候选。"})
         if not team and task.get("independent_baseline", False) and (not saved or saved["phase"] == "baseline"):
             baseline_calls, baseline = run_baseline(store, task_id, model, tools, task, evidence, events, start)
+            if configure_actions is not None:
+                configure_actions(actions)
             messages.append({"role": "user", "content": "独立基线问题（非结论）与已读证据："
                              + json.dumps({"baseline": baseline, "evidence": evidence}, ensure_ascii=False)})
         messages = compact_context(messages)
@@ -176,13 +196,26 @@ def _run_task(store, task_id, model, tools, team=None):
                 )
                 return
             if team:
-                team.deliver(messages, evidence, file_reviews)
+                team.deliver(messages, evidence, file_reviews, boundaries,
+                             investigations, finding_details)
                 team.check_running()
             else:
                 store.update(task_id, model_calls=step + 1)
             try:
-                request_messages = messages + [{"role": "user", "content": request_budget_note(store.get(task_id))}]
-                action = model.next_action(request_messages)
+                can_finalize = bool(finding_details) and all(
+                    item.get("status") != "supported" or any(
+                        detail.get("investigation_id") == item.get("id")
+                        for detail in finding_details
+                    ) for item in investigations
+                )
+                remaining_calls = task["max_steps"] - store.get(task_id).get("model_calls", 0)
+                if (team and can_finalize
+                        and (remaining_calls <= 3 or task.get("parent_report_submitted"))
+                        and not team.pending() and not team.undelivered()):
+                    action = {"report": _canonical_report(investigations, finding_details)}
+                else:
+                    request_messages = messages + [{"role": "user", "content": request_budget_note(store.get(task_id))}]
+                    action = model.next_action(request_messages)
                 if not isinstance(action, dict):
                     raise ModelOutputError("模型动作必须为JSON对象")
                 if "report" in action:
@@ -194,9 +227,14 @@ def _run_task(store, task_id, model, tools, team=None):
                     parsed_action = None
                 else:
                     parsed_action = ToolAction.parse(action)
-                    if not team and parsed_action.tool in {"start_investigator", "team_progress", "wait_for_workers", "read_worker_result", "link_worker_questions"}:
+                    if parsed_action.tool == "submit_audit_report":
+                        report = asdict(InvestigationReport.parse(parsed_action.arguments, evidence))
+                        parsed_action = None
+                    if parsed_action is None:
+                        pass
+                    elif not team and parsed_action.tool in {"start_investigator", "team_progress", "wait_for_workers", "read_worker_result", "link_worker_questions"}:
                         raise ModelOutputError("旧串行任务不支持协作工具，请新建协作审计")
-                    if parsed_action.tool == "record_boundary":
+                    elif parsed_action.tool == "record_boundary":
                         SecurityBoundary.parse(parsed_action.arguments, evidence)
                     elif parsed_action.tool == "record_file_review":
                         parse_file_review(parsed_action.arguments, evidence)
@@ -245,28 +283,27 @@ def _run_task(store, task_id, model, tools, team=None):
                 if team and (team.pending() or team.undelivered()):
                     # 不能在子任务仍工作或结果尚未进入主上下文时提交最终报告。
                     team.wait_for_result()
-                    team.deliver(messages, evidence, file_reviews)
+                    team.deliver(messages, evidence, file_reviews, boundaries,
+                                 investigations, finding_details)
                     messages.append({"role": "user", "content": "报告暂未提交：请核对刚交付的子任务结果和未完成项后重新决定。"})
                     store.update(task_id, checkpoint=checkpoint(messages, store.get(task_id)))
                     continue
                 if team and team.resume_for_validation():
                     # 预算保留暂停的子任务在报告前用保留额度收尾，候选不能永远停在待复核。
                     team.wait_for_result()
-                    team.deliver(messages, evidence, file_reviews)
+                    team.deliver(messages, evidence, file_reviews, boundaries,
+                                 investigations, finding_details)
                     messages.append({"role": "user", "content": "报告暂未提交：因预算保留暂停的子任务已完成收尾，请核对其结果后重新决定。"})
                     store.update(task_id, checkpoint=checkpoint(messages, store.get(task_id)))
                     continue
                 store.update(task_id, phase="validation", draft_report=report)
                 # 原地恢复验证阶段：续跑时从父任务携带已完成复核，输入与证据
                 # 一致则跳过模型；不一致的候选项重新独立复核。
-                validations = [
-                    # 直接标记复用并跳过重复模型调用；逐项校验仍由
-                    # review_packet 的指纹/证据匹配负责，此处只按候选编号预筛。
-                    {**dict(row), "reused": True}
-                    for row in store.get(task_id).get("previous_independent_reviews", [])
-                    if isinstance(row, dict) and not row.get("error")
-                    and row.get("investigation_id") in {item["id"] for item in investigations}
-                ]
+                # Reuse is decided inside review_packet, where the full input
+                # identity, evidence fingerprints and current semantic contract
+                # are checked. Candidate-id-only reuse can preserve stale or
+                # low-quality reviews after validators improve.
+                validations = []
                 calls = step + 1
 
                 def reserve_call():
@@ -300,17 +337,14 @@ def _run_task(store, task_id, model, tools, team=None):
 
                 def run_team_review(candidate, boundary, detail):
                     """每个候选使用独立模型和局部写入缓冲，不能并发修改主台账。"""
-                    review_tools = TeamReviewTools(team)
-                    tool_events = []
                     review_model = TeamModel(team, team.model_factory(), "review:" + candidate["id"])
                     validation = review_packet(
-                        review_model, candidate, boundary, evidence, tools=review_tools,
+                        review_model, candidate, boundary, evidence, tools=None,
                         cancelled=lambda: store.get(task_id)["status"] == "cancelled",
-                        on_tool=lambda action, result: tool_events.append((action, result)),
                         user_context={**user_context, "scope": task.get("scope")}, detail=detail,
                         previous_reviews=task.get("previous_independent_reviews", []),
                     )
-                    return validation, review_tools.evidence, tool_events
+                    return validation, {}, []
 
                 for candidate in investigations:
                     if candidate["status"] != "supported":
@@ -533,6 +567,32 @@ def _run_task(store, task_id, model, tools, team=None):
                 error="调查失败：模型响应、工具服务或证据校验未通过；已有记录已保存",
                 stop_reason="execution_failed",
             )
+
+
+def _canonical_report(investigations, finding_details):
+    """由已校验台账生成验证交接，不再请求模型重复总结。"""
+
+    details_by_id = {item["investigation_id"]: item for item in finding_details}
+    hypotheses = []
+    for item in investigations:
+        if item.get("status") != "supported" or item.get("id") not in details_by_id:
+            continue
+        detail = details_by_id[item["id"]]
+        review = (item.get("reviews") or [{}])[-1]
+        hypotheses.append({
+            "claim": detail["summary"],
+            "evidence_ids": list(dict.fromkeys([
+                *detail["rootCause"]["evidenceRefs"],
+                *detail["attackPath"]["evidenceRefs"],
+            ])),
+            "counterevidence": review.get("counterevidence") or "未记录额外反证",
+            "unknowns": "；".join(review.get("limitations") or detail["attackPath"]["limitations"]),
+        })
+    return {
+        "summary": f"已形成 {len(hypotheses)} 个具备完整根因和攻击路径的候选，转入独立复核。",
+        "hypotheses": hypotheses,
+        "unknowns": ["最终发现仅包含独立复核支持的候选；覆盖限制见确定性报告。"],
+    }
 
 
 def validate_report(report, evidence):

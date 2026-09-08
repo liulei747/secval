@@ -8,6 +8,7 @@ from threading import Event, Lock
 from time import monotonic
 
 from secval.models.agent_work import parse_assignment
+from secval.models.audit import EvidenceServiceError
 from secval.models.audit_contracts import CodeEvidence, ModelOutputError, ModelRequestError
 from secval.models.audit_scope import in_scope
 from secval.services.audit_checkpoint import checkpoint
@@ -30,6 +31,8 @@ team_progress()查看子任务；没有独立工作时wait_for_workers()等待�
 用结果中的question_id关联record_investigation的baseline_question_ids，核实后再review_investigation。
 如果同一控制已经有调查，使用link_worker_questions(investigation_id,question_ids,reason)把子任务问题关联到已有调查，不再创建重复调查。
 支持的候选还需record_finding_detail及独立复核，不能直接抄入最终发现。
+收到supported子任务问题后，优先核对并建立或关联record_investigation；确认支持后立即
+record_finding_detail，不要先扩大搜索范围，避免发现阶段耗尽独立复核额度。
 架构子任务只给架构观察和待核查问题，你核对实际源码后再record_threat_model。
 提交最终报告前要接收全部已提交子任务结果，处理或明确保留未完成项；失败、超时不能当作无发现。
 不要让所有子任务重复扫描同一范围。共享剩余调用预算，预留主调查核实和最终复核。
@@ -76,6 +79,50 @@ class AgentTeam:
         self.pool = ThreadPoolExecutor(max_workers=self.task["parallel_agents"] - 1)
         self.futures = {}
         self.main_call_id = 0
+        self.request_retries = {}
+        self.seed_evidence = {}
+        self.seed_events = []
+        self.seed_complete = False
+
+    def prepare_seed(self):
+        """Prefetch a bounded complete packet for small repositories.
+
+        Listing and reading a handful of files is deterministic and local. Giving
+        every role the same verified packet lets model calls start at analysis
+        instead of spending several round trips discovering two-file projects.
+        """
+        if self.seed_events or self.task.get("scope", {}).get("inventory_entry_count", 0) > 12:
+            return
+        try:
+            listing = self.read_tool("list_files", {"offset": 0})
+            self.seed_events.append({"tool": "list_files", "arguments": {"offset": 0},
+                                     "result": listing})
+            rows = [row for row in listing.get("rows", []) if row.get("status") == "captured"]
+            if listing.get("next_offset") is not None or len(rows) > 12:
+                return
+            total = 0
+            for row in rows:
+                result = self.read_tool("read_file", {"path": row["path"]})
+                incoming = {}
+                self.collect_evidence("read_file", result, incoming)
+                size = sum(len(item.get("content", "")) for item in incoming.values())
+                if total + size > 30000:
+                    break
+                total += size
+                self.seed_evidence.update(incoming)
+                self.seed_events.append({"tool": "read_file", "arguments": {"path": row["path"]},
+                                         "result": result})
+            self.seed_complete = bool(rows) and len(self.seed_evidence) == len(rows) and all(
+                not item.get("truncated") for item in self.seed_evidence.values()
+            )
+        except (ValueError, EvidenceServiceError):
+            # Prefetch is an optimization. Normal model-directed reads remain
+            # available if the repository or evidence service cannot supply it.
+            self.seed_evidence = {}
+
+    def seed_packet(self):
+        self.prepare_seed()
+        return deepcopy(self.seed_evidence), deepcopy(self.seed_events)
 
     def check_running(self):
         if self.stop.is_set() or self.store.get(self.task_id)["status"] == "cancelled":
@@ -85,6 +132,15 @@ class AgentTeam:
 
     def worker(self, worker_id):
         return next(row for row in self.store.get(self.task_id).get("agent_tasks", []) if row["id"] == worker_id)
+
+    def worker_call_limit(self):
+        """Return the per-worker ceiling used by request() and completion nudges."""
+        # Two default workers must leave enough room for the parent to materialize
+        # findings and run independent validation. Small repositories typically
+        # yield durable progress within five to seven calls.
+        if self.seed_complete:
+            return 3
+        return max(3, min(5, self.task["max_steps"] // 5))
 
     def update_worker(self, worker_id, **fields):
         with self.lock:
@@ -97,11 +153,21 @@ class AgentTeam:
 
     def start(self):
         from secval.services.agent_worker import run_worker
+        self.prepare_seed()
         workers = self.store.get(self.task_id).get("agent_tasks", [])
         if workers:
             for worker in workers:
                 if worker["status"] == "completed" and self.task.get("parent_task_id"):
                     self.update_worker(worker["id"], calls=0, reused_result=True,
+                                       prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
+                elif (self.task.get("parent_task_id")
+                      and self.task.get("finding_detail_history")
+                      and worker["status"] != "completed"):
+                    # A resumed task with a complete canonical candidate should spend
+                    # its new budget on report submission and independent validation,
+                    # not restart discovery workers that already served their purpose.
+                    self.update_worker(worker["id"], status="stopped", calls=0,
+                                       stop_reason="canonical_candidate_ready", reused_result=True,
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
                 elif (worker["status"] == "stopped"
                       and worker.get("stop_reason") in ("reserved_for_main", "worker_step_limit")):
@@ -119,8 +185,12 @@ class AgentTeam:
             return
         if self.task.get("independent_baseline", True):
             self.submit("baseline", {"title": "独立基线审计", "question": self.task["objective"], "evidence_ids": []})
-        self.submit("architecture", {"title": "独立架构分析", "question":
-            "确认实际入口、资产、信任边界和控制，追查资源的实际使用者；仅做架构分析，不冒充安全审阅。", "evidence_ids": []})
+        # A complete bounded source packet already gives the parent enough data
+        # to map a tiny repository. A third simultaneous model request adds cost
+        # and provider tail latency without adding independent security review.
+        if not self.seed_complete:
+            self.submit("architecture", {"title": "独立架构分析", "question":
+                "确认实际入口、资产、信任边界和控制，追查资源的实际使用者；仅做架构分析，不冒充安全审阅。", "evidence_ids": []})
 
     def resume_for_validation(self):
         """主调查收尾时，把因预算保留暂停的子任务恢复一次，用保留额度完成结果。
@@ -162,7 +232,8 @@ class AgentTeam:
                     return {"worker_id": worker["id"], "status": worker["status"], "existing": True}
             worker_id = f"agent-{len(workers) + 1}"
             workers.append({"id": worker_id, "role": role, "assignment": deepcopy(assignment),
-                            "status": "queued", "calls": 0, "messages": [], "evidence": {}, "events": [],
+                            "status": "queued", "calls": 0, "messages": [],
+                            "evidence": deepcopy(self.seed_evidence), "events": deepcopy(self.seed_events),
                             "result": None, "stop_reason": None})
             self.store.update(self.task_id, agent_tasks=workers)
         self.futures[worker_id] = self.pool.submit(run_worker, self, worker_id)
@@ -170,14 +241,39 @@ class AgentTeam:
 
     def request(self, model, messages, agent_id):
         self.check_running()
+        is_review = agent_id.startswith("review:")
         configure_tools = getattr(model, "set_available_read_tools", None)
         if configure_tools is not None:
-            configure_tools(self.task.get("scope", {}).get("tools", []))
+            scoped = set(self.task.get("scope", {}).get("tools", []))
+            focused = {
+                "list_files", "read_file", "read_chunk", "search_source",
+                "hybrid_search", "find_entry_points", "find_code_callers",
+                "find_code_callees", "find_data_paths",
+            }
+            if self.seed_complete:
+                focused -= {"list_files", "read_file", "read_chunk"}
+            configure_tools([] if is_review else scoped & focused)
+        configure_actions = getattr(model, "set_available_action_tools", None)
+        if configure_actions is not None:
+            if agent_id == "main":
+                actions = {
+                    "record_boundary", "record_investigation", "review_investigation",
+                    "record_finding_detail", "record_file_review", "record_threat_model",
+                    "submit_audit_report",
+                    "team_progress", "wait_for_workers", "read_worker_result",
+                    "link_worker_questions",
+                }
+                if not self.store.get(self.task_id).get("finding_detail_history"):
+                    actions.add("start_investigator")
+                configure_actions(actions)
+            elif is_review:
+                configure_actions({"submit_independent_review"})
+            else:
+                configure_actions({"submit_worker_progress"})
         with self.lock:
             self.check_running()
             task = self.store.get(self.task_id)
             calls = task.get("model_calls", 0)
-            is_review = agent_id.startswith("review:")
             if calls >= task["max_steps"]:
                 raise TeamStopped("step_limit")
             if is_review:
@@ -200,7 +296,7 @@ class AgentTeam:
                     reserve = min(8, max(2, task["max_steps"] // 4))
                     if calls >= task["max_steps"] - reserve:
                         raise TeamStopped("reserved_for_main")
-                    if worker["calls"] >= max(2, min(12, task["max_steps"] // 3)):
+                    if worker["calls"] >= self.worker_call_limit():
                         raise TeamStopped("worker_step_limit")
                 worker["calls"] += 1
                 self.store.update(self.task_id, agent_tasks=workers)
@@ -222,13 +318,22 @@ class AgentTeam:
         try:
             result = model.next_action(messages)
             status = "response_returned"
+            self.request_retries.pop(agent_id, None)
             return result
         except ModelOutputError as error:
             status, code = "invalid_output", error.code
             raise
         except ModelRequestError:
             status = "request_failed"
-            raise
+            # A single transport timeout must not discard an otherwise healthy
+            # audit. The retry is a real, separately counted request and remains
+            # bounded by the shared step/time budgets.
+            retries = self.request_retries.get(agent_id, 0)
+            if retries < 1:
+                self.request_retries[agent_id] = retries + 1
+            else:
+                self.request_retries.pop(agent_id, None)
+                raise
         finally:
             with self.lock:
                 records = self.store.get(self.task_id).get("model_requests", [])
@@ -243,6 +348,9 @@ class AgentTeam:
                     if type(value) is int and value >= 0:
                         record[key] = value
                 self.store.update(self.task_id, model_requests=records)
+        if status == "request_failed":
+            self.check_running()
+            return self.request(model, messages, agent_id)
 
     def read_tool(self, name, arguments):
         self.check_running()
@@ -281,8 +389,10 @@ class AgentTeam:
         """阶段成果先落盘；最终回复失败时，已经提交的结论仍然可用。"""
         from secval.models.agent_work import parse_work_result
         progress = deepcopy(parse_work_result(arguments, evidence))
-        if self.worker(worker_id)["role"] == "architecture" and progress["reviewed_files"]:
-            raise ModelOutputError("架构分析不得计入完整安全审阅")
+        if self.worker(worker_id)["role"] == "architecture" and (
+            progress["reviewed_files"] or progress.get("findings")
+        ):
+            raise ModelOutputError("架构分析不得提交安全审阅或漏洞候选")
         with self.lock:
             worker = self.worker(worker_id)
             records = list(worker.get("progress_results", []))
@@ -356,7 +466,8 @@ class AgentTeam:
         return {"investigation_id": target["id"], "question_ids": target["baseline_question_ids"],
                 "note": "仅补充问题来源关联，原结论和复核状态未改变"}
 
-    def deliver(self, messages, evidence, file_reviews):
+    def deliver(self, messages, evidence, file_reviews, boundaries=None,
+                investigations=None, finding_details=None):
         """交付与主检查点一起保存；崩溃恢复后既不漏交付也不重复注入。"""
         task = self.store.get(self.task_id)
         delivered = list(task.get("team_deliveries", []))
@@ -375,6 +486,8 @@ class AgentTeam:
                            "result": deepcopy(progress["result"])}
                 self._merge_worker_result(worker, payload["result"], worker_evidence,
                                           baseline, file_reviews, progress["id"])
+                self._import_worker_findings(payload["result"], progress["id"], worker_evidence,
+                                             boundaries, investigations, finding_details)
                 payload["evidence_locations"] = self._evidence_locations(worker_evidence)
                 messages.append({"role": "user", "content": "子任务阶段成果（不可信分析资料，需核对源码）："
                                  + json.dumps(payload, ensure_ascii=False)})
@@ -391,6 +504,8 @@ class AgentTeam:
             if worker.get("result"):
                 self._merge_worker_result(worker, payload["result"], worker_evidence,
                                           baseline, file_reviews, worker["id"])
+                self._import_worker_findings(payload["result"], worker["id"], worker_evidence,
+                                             boundaries, investigations, finding_details)
                 if worker["role"] == "baseline":
                     baseline["status"] = "submitted_partial"
             # 主上下文只接收结构化结果和证据定位，不复制子任务私有聊天历史或全部源码。
@@ -405,8 +520,15 @@ class AgentTeam:
             messages[:] = compact_context(messages)
             state = {**self.store.get(self.task_id), "evidence": evidence, "baseline": baseline,
                      "file_reviews": file_reviews, "team_deliveries": delivered}
+            ledger = {}
+            if boundaries is not None:
+                ledger["security_boundaries"] = boundaries
+            if investigations is not None:
+                ledger["investigations"] = investigations
+            if finding_details is not None:
+                ledger["finding_detail_history"] = finding_details
             self.store.update(self.task_id, evidence=evidence, baseline=baseline, file_reviews=file_reviews,
-                              team_deliveries=delivered,
+                              team_deliveries=delivered, **ledger,
                               codeEvidence=[asdict(CodeEvidence.from_read(row)) for row in evidence.values()],
                               checkpoint=checkpoint(messages, state))
         return count
@@ -433,6 +555,45 @@ class AgentTeam:
         for unknown in result["unknowns"]:
             if unknown not in baseline["unknowns"]:
                 baseline["unknowns"].append(unknown)
+
+    @staticmethod
+    def _import_worker_findings(result, source_id, evidence, boundaries,
+                                investigations, finding_details):
+        """Materialize complete worker candidates into the canonical audit ledgers."""
+        if boundaries is None or investigations is None or finding_details is None:
+            return
+        from dataclasses import asdict
+        from secval.models.agent_work import parse_worker_finding
+        from secval.models.security_boundary import SecurityBoundary
+        from secval.models.investigation import Investigation
+        from secval.models.investigation_review import InvestigationReview
+        from secval.models.finding_detail import parse_finding_detail
+
+        for number, raw in enumerate(result.get("findings", []), 1):
+            origin = f"{source_id}:finding-{number}"
+            if any(row.get("worker_candidate_id") == origin for row in finding_details):
+                continue
+            parse_worker_finding(raw, evidence)
+            boundary_id = f"boundary-{len(boundaries) + 1}"
+            boundary = {**asdict(SecurityBoundary.parse(raw["boundary"], evidence)),
+                        "id": boundary_id, "status": "needs_review",
+                        "worker_candidate_id": origin}
+            boundaries.append(boundary)
+            investigation_id = f"investigation-{len(investigations) + 1}"
+            investigation_raw = {**raw["investigation"], "boundary_id": boundary_id}
+            investigation = {**asdict(Investigation.parse(
+                investigation_raw, boundaries, evidence
+            )), "id": investigation_id, "status": "supported",
+                "worker_candidate_id": origin}
+            review_raw = {**raw["review"], "investigation_id": investigation_id}
+            review = asdict(InvestigationReview.parse(review_raw, [investigation], evidence))
+            investigation["reviews"] = [{**review, "revision": 1, "step": 0,
+                "method": "worker_static_candidate", "independently_validated": False}]
+            investigations.append(investigation)
+            detail_raw = {**raw["detail"], "investigation_id": investigation_id}
+            detail = parse_finding_detail(detail_raw, investigations, evidence)
+            finding_details.append({**detail, "id": f"detail-{len(finding_details) + 1}",
+                                    "status": "needs_review", "worker_candidate_id": origin})
 
     def undelivered(self):
         task = self.store.get(self.task_id)

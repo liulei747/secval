@@ -31,6 +31,7 @@ class AuditModel:
         self.tool_protocol = tool_protocol
         self.pending_tool_call = None
         self.available_read_tools = set(READ_TOOL_ARGUMENTS)
+        self.available_action_tools = set()
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 600:
             raise ValueError("审计模型单次请求超时必须为1到600秒")
         self.timeout_seconds = timeout_seconds
@@ -56,10 +57,20 @@ class AuditModel:
         body = {"model": self.name, "messages": request_messages, "temperature": 0,
                 "max_tokens": self.max_output_tokens}
         if self.tool_protocol == "native":
-            native_tools = _native_read_tools(self.available_read_tools)
+            native_tools = [
+                *_native_read_tools(self.available_read_tools),
+                *_native_action_tools(self.available_action_tools),
+            ]
             if native_tools:
                 body["tools"] = native_tools
-                body["tool_choice"] = "auto"
+                body["tool_choice"] = (
+                    "required" if self.available_action_tools & {
+                        "submit_audit_report", "submit_independent_review"
+                    } else "auto"
+                )
+                # The audit state machine persists and validates one action at a time.
+                # Some compatible providers otherwise emit several parallel calls.
+                body["parallel_tool_calls"] = False
         # 供应商扩展必须显式选择；默认不发送，不能假设所有兼容API均支持。
         if self.thinking is not None:
             body["thinking"] = {"type": self.thinking}
@@ -152,6 +163,18 @@ class AuditModel:
             name for name in tool_names if name in READ_TOOL_ARGUMENTS
         }
 
+    def set_available_action_tools(self, tool_names):
+        """声明当前审计角色可以提交的结构化动作。"""
+
+        if not isinstance(tool_names, (list, tuple, set)):
+            raise ValueError("可用动作工具名称必须是列表")
+        self.available_action_tools = {
+            name for name in tool_names if name in ACTION_TOOL_SCHEMAS
+        }
+
+    def _available_native_tools(self):
+        return self.available_read_tools | self.available_action_tools
+
     def _messages_for_request(self, messages):
         """把内部工具记录还原成供应商要求的assistant/tool消息。
 
@@ -183,7 +206,7 @@ class AuditModel:
             parsed = ToolAction.parse(action)
         except (TypeError, json.JSONDecodeError, ValueError, ModelOutputError):
             return None
-        if parsed.tool not in self.available_read_tools:
+        if parsed.tool not in self._available_native_tools():
             return None
 
         result_content = result_message.get("content", "")
@@ -224,14 +247,17 @@ class AuditModel:
         """校验单个原生只读工具调用，并转换为后端统一动作。"""
 
         tool_calls = message.get("tool_calls")
-        if not isinstance(tool_calls, list) or len(tool_calls) != 1:
-            raise ModelOutputError("每轮只允许一个原生工具调用", code="invalid_action")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            raise ModelOutputError("原生工具调用不能为空", code="invalid_action")
+        # Providers may ignore parallel_tool_calls=false. Consume the first call and
+        # reconstruct a valid single-call transcript; later actions are re-planned
+        # against the persisted result instead of applying an unvalidated batch.
         raw = tool_calls[0]
         if not isinstance(raw, dict) or raw.get("type") != "function":
             raise ModelOutputError("原生工具调用格式不合法", code="invalid_action")
         function = raw.get("function")
-        if not isinstance(function, dict) or function.get("name") not in self.available_read_tools:
-            raise ModelOutputError("原生模式只允许已声明的只读取证工具", code="invalid_action")
+        if not isinstance(function, dict) or function.get("name") not in self._available_native_tools():
+            raise ModelOutputError("原生模式只允许当前角色已声明的工具", code="invalid_action")
         if not isinstance(raw.get("id"), str) or not raw["id"].strip():
             raise ModelOutputError("原生工具调用缺少编号", code="invalid_action")
         try:
@@ -279,6 +305,142 @@ def _native_read_tools(available_names):
             },
         })
     return tools
+
+
+def _object(properties, required=None):
+    return {"type": "object", "properties": properties,
+            "required": sorted(required if required is not None else properties),
+            "additionalProperties": False}
+
+
+STRING = {"type": "string"}
+STRINGS = {"type": "array", "items": STRING}
+RATING = _object({"level": STRING, "rationale": STRING})
+EVIDENCE_NOTE = _object({"evidence_id": STRING, "role": STRING, "explanation": STRING})
+DATAFLOW = _object({"summary": STRING, "source": STRING, "transformations": STRINGS,
+                    "sink": STRING, "outcome": STRING, "evidenceRefs": STRINGS})
+REACHABILITY = _object({"summary": STRING, "attacker": STRING, "entrypoint": STRING,
+                        "preconditions": STRINGS, "outcome": STRING, "evidenceRefs": STRINGS})
+FINDING_DETAIL_SCHEMA = _object({
+    "investigation_id": STRING, "title": STRING, "summary": STRING,
+    "rootCause": _object({"summary": STRING, "evidenceRefs": STRINGS}),
+    "attackPath": _object({"summary": STRING, "evidenceRefs": STRINGS,
+                           "dataflow": DATAFLOW, "reachability": REACHABILITY,
+                           "impact": RATING, "likelihood": RATING, "limitations": STRINGS}),
+    "severity": RATING, "confidence": RATING, "remediation": STRING,
+    "remediationTests": STRINGS, "preventiveControls": STRINGS,
+    "evidenceNotes": {"type": "array", "items": EVIDENCE_NOTE},
+    "ruleId": STRING,
+    "taxonomy": _object({"category": STRING, "cwe": STRINGS}),
+    "root_control": STRING,
+})
+FACT = _object({"text": STRING, "origin": STRING, "evidence_ids": STRINGS})
+WORKER_BOUNDARY = _object({
+    "entry": STRING, "attacker_control": STRING, "asset": STRING,
+    "trust_transition": STRING, "expected_control": STRING,
+    "observed_control": STRING, "unknowns": STRINGS, "evidence_ids": STRINGS,
+})
+WORKER_INVESTIGATION = _object({
+    "question": STRING, "control_to_check": STRING, "counterevidence": STRING,
+    "next_check": STRING, "unknowns": STRINGS, "evidence_ids": STRINGS,
+    "baseline_question_ids": STRINGS,
+}, {"question", "control_to_check", "counterevidence", "next_check", "unknowns", "evidence_ids"})
+WORKER_REVIEW = _object({
+    "outcome": STRING, "assessment": STRING, "counterevidence": STRING,
+    "limitations": STRINGS, "evidence_ids": STRINGS,
+})
+WORKER_DETAIL = _object({key: value for key, value in FINDING_DETAIL_SCHEMA["properties"].items()
+                         if key != "investigation_id"})
+WORKER_FINDING = _object({"boundary": WORKER_BOUNDARY, "investigation": WORKER_INVESTIGATION,
+                          "review": WORKER_REVIEW, "detail": WORKER_DETAIL})
+WORKER_QUESTION = _object({
+    "question": STRING, "outcome": STRING, "assessment": STRING,
+    "counterevidence": STRING, "unknowns": STRINGS, "evidence_ids": STRINGS,
+})
+WORKER_FILE_REVIEW = _object({
+    "file_id": STRING, "assessment": STRING, "controls_checked": STRINGS,
+    "unknowns": STRINGS,
+})
+REPORT_HYPOTHESIS = _object({"claim": STRING, "counterevidence": STRING,
+                             "unknowns": STRING, "evidence_ids": STRINGS})
+
+ACTION_TOOL_SCHEMAS = {
+    "submit_audit_report": _object({
+        "summary": STRING, "hypotheses": {"type": "array", "items": REPORT_HYPOTHESIS},
+        "unknowns": STRINGS,
+    }),
+    "submit_independent_review": _object({
+        "investigation_id": STRING, "outcome": STRING, "assessment": STRING,
+        "counterevidence": STRING, "limitations": STRINGS, "evidence_ids": STRINGS,
+    }),
+    "record_boundary": _object({
+        "entry": STRING, "attacker_control": STRING, "asset": STRING,
+        "trust_transition": STRING, "expected_control": STRING,
+        "observed_control": STRING, "unknowns": STRINGS, "evidence_ids": STRINGS,
+    }),
+    "record_investigation": _object({
+        "boundary_id": STRING, "question": STRING, "control_to_check": STRING,
+        "counterevidence": STRING, "next_check": STRING, "unknowns": STRINGS,
+        "evidence_ids": STRINGS, "baseline_question_ids": STRINGS,
+    }, {"boundary_id", "question", "control_to_check", "counterevidence", "next_check",
+        "unknowns", "evidence_ids"}),
+    "review_investigation": _object({
+        "investigation_id": STRING, "outcome": STRING, "assessment": STRING,
+        "counterevidence": STRING, "limitations": STRINGS, "evidence_ids": STRINGS,
+    }),
+    "record_finding_detail": FINDING_DETAIL_SCHEMA,
+    "record_file_review": _object({
+        "file_id": STRING, "assessment": STRING, "controls_checked": STRINGS,
+        "unknowns": STRINGS,
+    }),
+    "record_threat_model": _object({
+        "summary": FACT, "assets": {"type": "array", "items": FACT},
+        "trustBoundaries": STRINGS,
+        "attackerCapabilities": {"type": "array", "items": FACT},
+        "securityObjectives": {"type": "array", "items": FACT},
+        "assumptions": {"type": "array", "items": FACT},
+    }),
+    "start_investigator": _object({"title": STRING, "question": STRING, "evidence_ids": STRINGS}),
+    "team_progress": _object({}),
+    "wait_for_workers": _object({}),
+    "read_worker_result": _object({"worker_id": STRING}),
+    "link_worker_questions": _object({"investigation_id": STRING, "question_ids": STRINGS,
+                                      "reason": STRING}),
+    # Worker results contain already validated nested contracts. Native function calling
+    # still guarantees one complete JSON argument object, which is the failure mode this
+    # action is designed to avoid.
+    "submit_worker_progress": _object({
+        "summary": STRING,
+        "questions": {"type": "array", "items": WORKER_QUESTION},
+        "unknowns": STRINGS,
+        "reviewed_files": {"type": "array", "items": WORKER_FILE_REVIEW},
+        "findings": {"type": "array", "items": WORKER_FINDING},
+    }, {"summary", "questions", "unknowns", "reviewed_files"}),
+}
+
+ACTION_TOOL_DESCRIPTIONS = {
+    "submit_audit_report": "提交调查阶段的最终摘要、候选假设和覆盖缺口。",
+    "submit_independent_review": "提交独立证据复核结论。",
+    "record_boundary": "保存已取证的安全边界笔记。",
+    "record_investigation": "登记需要核查的控制问题。",
+    "review_investigation": "根据已读证据核查一个调查问题。",
+    "record_finding_detail": "保存完整漏洞候选、攻击路径、评级、证据说明和修复建议。",
+    "record_file_review": "记录一个已完整阅读文件的安全审阅结果。",
+    "record_threat_model": "保存或修订威胁模型。",
+    "start_investigator": "启动一个只读子调查任务。",
+    "team_progress": "查询协作调查进度。",
+    "wait_for_workers": "等待运行中的子调查任务产生结果。",
+    "read_worker_result": "读取一个已结束子调查任务的结果。",
+    "link_worker_questions": "将子调查问题关联到主调查记录。",
+    "submit_worker_progress": "持久化子调查员当前已验证的阶段成果。",
+}
+
+
+def _native_action_tools(available_names):
+    return [{"type": "function", "function": {
+        "name": name, "description": ACTION_TOOL_DESCRIPTIONS[name],
+        "parameters": ACTION_TOOL_SCHEMAS[name],
+    }} for name in ACTION_TOOL_SCHEMAS if name in available_names]
 
 
 def _network_error_category(error):

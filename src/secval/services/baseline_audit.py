@@ -41,6 +41,9 @@ def parse_baseline(raw, evidence):
 
 
 def run_baseline(store, task_id, model, tools, task, evidence, events, start):
+    configure_actions = getattr(model, "set_available_action_tools", None)
+    if configure_actions is not None:
+        configure_actions(set())
     context = {key: task.get(key) for key in ("objective", "scope", "security_context", "supplied_threat_model")}
     messages = [{"role": "system", "content": PROMPT}, {"role": "user", "content": json.dumps(context, ensure_ascii=False)}]
     saved = task.get("checkpoint")

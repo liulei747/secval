@@ -36,7 +36,7 @@ def tool_reply_for_model(tool_name, result):
     return {key: receipt, "note": result.get("note", "记录已保存；保存不代表独立验证通过")}
 
 
-def compact_context(messages, *, threshold=80000, keep_recent=4):
+def compact_context(messages, *, threshold=30000, keep_recent=4):
     result = normalize_json_messages(messages)
     if context_size(result) <= threshold:
         return result
@@ -69,7 +69,84 @@ def compact_context(messages, *, threshold=80000, keep_recent=4):
             message["content"] = replacement
         if context_size(result) <= threshold:
             break
+    if context_size(result) > threshold:
+        _compact_recorded_action_pairs(result, keep_recent)
+    if context_size(result) > threshold:
+        _compact_read_pairs(result, keep_recent)
     return result
+
+
+def _compact_recorded_action_pairs(messages, keep_recent):
+    """把旧写入动作替换为小回执；完整结构仍由任务台账保存。"""
+
+    record_tools = {
+        "record_boundary", "record_investigation", "review_investigation",
+        "record_finding_detail", "record_file_review", "record_threat_model",
+    }
+    for message in messages[:max(0, len(messages) - keep_recent)]:
+        if message.get("role") != "assistant":
+            continue
+        try:
+            action = json.loads(message.get("content", ""))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(action, dict) or action.get("tool") not in record_tools:
+            continue
+        arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+        receipt = {"recorded_action": action["tool"]}
+        for key in ("investigation_id", "file_id", "outcome", "title", "ruleId"):
+            if isinstance(arguments.get(key), str):
+                receipt[key] = arguments[key]
+        message["content"] = json.dumps(receipt, ensure_ascii=False)
+
+
+def _compact_read_pairs(messages, keep_recent):
+    """旧读取只保留可重读定位，避免每轮重发源码和搜索结果。"""
+
+    end = max(0, len(messages) - keep_recent)
+    for index in range(min(end, len(messages) - 1)):
+        assistant, reply = messages[index], messages[index + 1]
+        if assistant.get("role") != "assistant" or reply.get("role") != "user":
+            continue
+        try:
+            action = json.loads(assistant.get("content", ""))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(action, dict) or action.get("tool") not in {
+            "read_file", "read_chunk", "list_files", "list_chunks", "search_text",
+            "search_source", "hybrid_search", "find_symbol", "find_entry_points",
+            "find_code_relations", "find_code_callers", "find_code_callees",
+            "find_code_type_relations", "find_dispatch_targets", "find_code_calls",
+            "find_data_paths",
+        }:
+            continue
+        prefix = next((value for value in ("工具数据：", "不可信工具数据：")
+                       if str(reply.get("content", "")).startswith(value)), None)
+        if prefix is None:
+            continue
+        try:
+            payload = json.loads(reply["content"][len(prefix):])
+        except (TypeError, ValueError):
+            continue
+        rows = payload.get("rows", []) if isinstance(payload, dict) else []
+        locations = []
+        for row in rows[:30] if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            item = {key: row[key] for key in (
+                "evidence_id", "chunk_id", "relative_path", "path", "symbol_name",
+                "start_line", "end_line", "content_sha256",
+            ) if key in row}
+            if item:
+                locations.append(item)
+        arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+        assistant["content"] = json.dumps({"completed_read": action["tool"],
+                                             "arguments": arguments}, ensure_ascii=False)
+        reply["content"] = prefix + json.dumps({
+            "result_count": len(rows) if isinstance(rows, list) else None,
+            "locations": locations,
+            "context_note": "完整结果已保存；需要源码正文时按定位重新读取固定快照。",
+        }, ensure_ascii=False)
 
 
 def normalize_json_messages(messages):

@@ -29,6 +29,9 @@ class InvestigationReview:
         for key in ("investigation_id", "outcome", "assessment", "counterevidence"):
             if not isinstance(raw[key], str) or not 1 <= len(raw[key].strip()) <= 2000:
                 raise ModelOutputError("核查描述必须为1到2000字符")
+        placeholders = {"待核查", "占位", "待定", "未知", "todo", "tbd", "placeholder", "n/a"}
+        if raw["assessment"].strip().lower() in placeholders or raw["counterevidence"].strip().lower() in placeholders:
+            raise ModelOutputError("核查结论和反证必须是具体证据判断，不能使用占位文本")
         if raw["investigation_id"] not in {item["id"] for item in investigations}:
             raise ModelOutputError("只能核查本任务已经登记的调查问题")
         if raw["outcome"] not in {"supported", "refuted", "inconclusive"}:
@@ -38,6 +41,8 @@ class InvestigationReview:
             if (not isinstance(items, list) or not 1 <= len(items) <= 20
                     or any(not isinstance(v, str) or not 1 <= len(v.strip()) <= 2000 for v in items)):
                 raise ModelOutputError("核查限制和证据必须为非空字符串数组，最多20项")
+        if any(item.strip().lower() in placeholders for item in raw["limitations"]):
+            raise ModelOutputError("核查限制必须描述具体缺口，不能使用占位文本")
         refs = raw["evidence_ids"]
         if len(set(refs)) != len(refs) or any(ref not in evidence for ref in refs):
             raise ModelOutputError("核查引用必须是不重复的已读证据ID")

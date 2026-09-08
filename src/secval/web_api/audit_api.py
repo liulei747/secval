@@ -1,11 +1,12 @@
 """单用户本机审计入口；不适合直接暴露公网。"""
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from secval.config.audit_settings import load_audit_settings
 from secval.models.audit import AuditBusyError, AuditTaskInput, AuditUnavailableError, EvidenceServiceError
+from secval.services.audit_markdown import render_audit_markdown
 
 router = APIRouter()
 
@@ -141,6 +142,18 @@ def get_report(task_id: str, request: Request):
                                          "Cache-Control": "no-store"})
 
 
+@router.get("/api/audits/{task_id}/report.md")
+def get_markdown_report(task_id: str, request: Request):
+    try:
+        report = request.app.state.audit_service.report(task_id)
+    except KeyError:
+        raise HTTPException(404, "任务不存在") from None
+    return Response(render_audit_markdown(report), media_type="text/markdown; charset=utf-8", headers={
+        "Content-Disposition": 'attachment; filename="secval-audit-report.md"',
+        "Cache-Control": "no-store",
+    })
+
+
 @router.get("/audit", response_class=HTMLResponse)
 def audit_page():
     return """<!doctype html><html lang="zh"><meta charset="utf-8">
@@ -168,7 +181,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:20px}
 <button id="start">开始调查</button><button id="cancel">取消当前任务</button>
 <button id="recover">确认失联任务</button>
 <button id="resume">从检查点续跑（新任务）</button>
-<button id="export">导出当前报告（含源码）</button>
+<button id="export">导出原始JSON（含源码）</button><button id="exportMd">导出Markdown报告</button>
 <a id="graphLink" href="/graph" style="margin-left:10px">打开代码关系查询</a>
 <button id="refresh">刷新历史</button><select id="history"></select>
 <h2>子Agent进度</h2><p id="teamSummary">尚未选择任务</p>
@@ -208,6 +221,7 @@ el('resume').onclick=async()=>{if(!current)return;try{const t=await api('/api/au
 el('cancel').onclick=async()=>{if(current){await api('/api/audits/'+current+'/cancel',{});await show();}};
 el('recover').onclick=async()=>{if(current){try{await api('/api/audits/'+current+'/recover-stale',{});await show();}catch(e){el('out').textContent=e.message;}}};
 el('export').onclick=()=>{if(current)window.location.href='/api/audits/'+encodeURIComponent(current)+'/report';};
+el('exportMd').onclick=()=>{if(current)window.location.href='/api/audits/'+encodeURIComponent(current)+'/report.md';};
 el('refresh').onclick=history;el('history').onchange=()=>{current=el('history').value;show();};
 setInterval(()=>show().catch(e=>el('out').textContent=e.message),3000);
 api('/api/repositories').then(d=>{for(const r of d.repositories)el('repo').add(new Option(r.repository_id+' / '+r.snapshot_id,JSON.stringify({repository_id:r.repository_id,snapshot_id:r.snapshot_id})));}).catch(e=>el('out').textContent=e.message);
