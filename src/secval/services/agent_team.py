@@ -91,28 +91,43 @@ class AgentTeam:
         every role the same verified packet lets model calls start at analysis
         instead of spending several round trips discovering two-file projects.
         """
-        if self.seed_events or self.task.get("scope", {}).get("inventory_entry_count", 0) > 12:
+        if self.seed_events:
             return
         try:
             listing = self.read_tool("list_files", {"offset": 0})
             self.seed_events.append({"tool": "list_files", "arguments": {"offset": 0},
                                      "result": listing})
             rows = [row for row in listing.get("rows", []) if row.get("status") == "captured"]
-            if listing.get("next_offset") is not None or len(rows) > 12:
-                return
+            small_complete = listing.get("next_offset") is None and 0 < len(rows) <= 12
+            selected_rows = rows
+            if not small_complete:
+                if "find_entry_points" not in self.task.get("scope", {}).get("tools", []):
+                    return
+                entries = self.read_tool("find_entry_points", {"framework": "all", "limit": 50})
+                self.seed_events.append({"tool": "find_entry_points",
+                                         "arguments": {"framework": "all", "limit": 50},
+                                         "result": entries})
+                priority = {"security_boundary": 0, "authorization": 1, "route": 2,
+                            "message_consumer": 3, "scheduler": 4}
+                ordered = sorted(entries.get("rows", []),
+                                 key=lambda item: (priority.get(item.get("kind"), 5),
+                                                   item.get("path", ""), item.get("line", 0)))
+                paths = list(dict.fromkeys(item.get("path") for item in ordered if item.get("path")))[:4]
+                selected_rows = [{"path": path} for path in paths]
             total = 0
-            for row in rows:
+            for row in selected_rows:
                 result = self.read_tool("read_file", {"path": row["path"]})
                 incoming = {}
                 self.collect_evidence("read_file", result, incoming)
                 size = sum(len(item.get("content", "")) for item in incoming.values())
-                if total + size > 30000:
+                packet_limit = 30000 if small_complete else 12000
+                if total + size > packet_limit:
                     break
                 total += size
                 self.seed_evidence.update(incoming)
                 self.seed_events.append({"tool": "read_file", "arguments": {"path": row["path"]},
                                          "result": result})
-            self.seed_complete = bool(rows) and len(self.seed_evidence) == len(rows) and all(
+            self.seed_complete = small_complete and len(self.seed_evidence) == len(rows) and all(
                 not item.get("truncated") for item in self.seed_evidence.values()
             )
         except (ValueError, EvidenceServiceError):
@@ -252,6 +267,8 @@ class AgentTeam:
             }
             if self.seed_complete:
                 focused -= {"list_files", "read_file", "read_chunk"}
+            elif self.seed_evidence:
+                focused -= {"list_files", "find_entry_points"}
             configure_tools([] if is_review else scoped & focused)
         configure_actions = getattr(model, "set_available_action_tools", None)
         if configure_actions is not None:

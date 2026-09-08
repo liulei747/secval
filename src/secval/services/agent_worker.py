@@ -53,10 +53,13 @@ def run_worker(team, worker_id):
         context.update(role=worker["role"], assignment=worker["assignment"])
         if evidence:
             context["prefetched_evidence"] = list(evidence.values())
-            context["prefetch_instruction"] = (
+            context["prefetch_instruction"] = ((
                 "以上证据是后端已校验的完整小仓库源码包，可直接引用evidence_id。"
                 "不要重新枚举或读取这些文件；第一轮直接分析并提交完整finding、question或result。"
-            )
+            ) if team.seed_complete else (
+                "以上是后端按入口、授权标记和安全边界预取的优先证据包。"
+                "先分析这些证据并提交阶段成果；只为明确的数据流缺口做定向补读，不重复枚举仓库。"
+            ))
         messages = [{"role": "system", "content": WORKER_PROMPT},
                     {"role": "user", "content": json.dumps(context, ensure_ascii=False)}]
     else:

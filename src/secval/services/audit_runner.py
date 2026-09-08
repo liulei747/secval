@@ -171,9 +171,13 @@ def _run_task(store, task_id, model, tools, team=None):
             if seeded:
                 evidence.update(seeded)
                 events.extend(seed_events)
-                messages.append({"role": "user", "content": "后端预取的小仓库完整源码证据包："
-                                 + json.dumps(list(seeded.values()), ensure_ascii=False)
-                                 + "。这些证据可直接引用；不要重新枚举或读取，立即分析控制并记录候选。"})
+                label = ("后端预取的小仓库完整源码证据包：" if team.seed_complete
+                         else "后端按入口、授权标记和安全边界预取的优先证据包：")
+                instruction = ("。这些证据可直接引用；不要重新枚举或读取，立即分析控制并记录候选。"
+                               if team.seed_complete else
+                               "。先分析这些证据并记录阶段成果；只为具体数据流缺口定向补读。")
+                messages.append({"role": "user", "content": label
+                                 + json.dumps(list(seeded.values()), ensure_ascii=False) + instruction})
         if not team and task.get("independent_baseline", False) and (not saved or saved["phase"] == "baseline"):
             baseline_calls, baseline = run_baseline(store, task_id, model, tools, task, evidence, events, start)
             if configure_actions is not None:
