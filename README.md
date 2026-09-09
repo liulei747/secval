@@ -5,6 +5,8 @@
 - [只读审计原型：接口与限制](docs/audit-agent.md)：当前审计能力、Web页面、预算/续跑用法与报告语义。
 - [审计实施状态与验收记录](docs/audit-implementation-status.md)：多Agent协作、真实验收结果与未完成项。
 - [快速扫描与深度扫描设计](docs/audit-scan-modes-design.md)：批量 Prefill 端点初筛、动态 Agent 验证、资源控制、收敛条件与迁移方案；尚未实现。
+- [安全分析内核架构重构](docs/security-analysis-kernel-architecture.md)：统一事实层、八类专用分析器、语义层和六态结果层的目标设计。
+- [安全分析内核重构看板](docs/security-analysis-kernel-roadmap.md)：分阶段任务、质量门禁、盲测与反过拟合验收；当前处于设计阶段。
 
 后续审计功能开发先核对上述文档。目标为独立Web审计应用，当前原型不等于完整审计系统。
 

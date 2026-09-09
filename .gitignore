@@ -31,5 +31,7 @@ docs/*
 !docs/audit-agent.md
 !docs/audit-scan-modes-design.md
 !docs/sinkspring-audit-optimization-summary.md
+!docs/security-analysis-kernel-architecture.md
+!docs/security-analysis-kernel-roadmap.md
 gpu-wheels
 node_modules/

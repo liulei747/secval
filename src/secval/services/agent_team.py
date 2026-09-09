@@ -68,8 +68,8 @@ _SINK_RULES = (
     ("management.endpoints.web.exposure", "configuration", "security_misconfiguration", "最小化管理端点暴露"),
     ("h2.console.enabled", "configuration", "security_misconfiguration", "生产环境关闭数据库控制台"),
     ("include-stacktrace", "configuration", "security_misconfiguration", "生产响应禁用堆栈信息"),
-    ("password:", "secrets", "hardcoded_secret", "外部秘密存储"),
-    ("client-secret", "secrets", "hardcoded_secret", "外部秘密存储"),
+    ("password:", "configuration", "hardcoded_secret", "外部秘密存储"),
+    ("client-secret", "configuration", "hardcoded_secret", "外部秘密存储"),
 )
 
 
@@ -468,12 +468,7 @@ class AgentTeam:
         workers = self.store.get(self.task_id).get("agent_tasks", [])
         if workers:
             for worker in workers:
-                if (self.path_pipeline_enabled and worker.get("mode") == "prefill_path_probe"
-                        and worker["status"] == "failed"):
-                    self.update_worker(worker["id"], status="queued", calls=0, stop_reason=None,
-                                       prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
-                    self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
-                elif worker["status"] == "completed" and self.task.get("parent_task_id"):
+                if worker["status"] == "completed" and self.task.get("parent_task_id"):
                     self.update_worker(worker["id"], calls=0, reused_result=True,
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
                 elif (self.task.get("parent_task_id")
@@ -485,6 +480,11 @@ class AgentTeam:
                     self.update_worker(worker["id"], status="stopped", calls=0,
                                        stop_reason="canonical_candidate_ready", reused_result=True,
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
+                elif (self.path_pipeline_enabled and worker.get("mode") == "prefill_path_probe"
+                        and worker["status"] == "failed"):
+                    self.update_worker(worker["id"], status="queued", calls=0, stop_reason=None,
+                                       prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
+                    self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
                 elif (worker["status"] == "stopped"
                       and worker.get("stop_reason") in ("reserved_for_main", "worker_step_limit")):
                     # 这两类暂停意味着子任务尚无完整结果；立即恢复会消耗新预算，
@@ -834,15 +834,68 @@ class AgentTeam:
             sketch_id = f"{source_id}:path-{number}"
             if any(row.get("id") == sketch_id for row in sketches):
                 continue
-            identity = tuple(" ".join(str(raw.get(key, "")).lower().split())
-                             for key in ("candidate_type", "entry", "source", "sink"))
-            if any(tuple(" ".join(str(row.get(key, "")).lower().split())
-                         for key in ("candidate_type", "entry", "source", "sink")) == identity
-                   for row in sketches):
+            duplicate = next((row for row in sketches
+                              if AgentTeam._same_path_candidate(row, raw)), None)
+            if duplicate is not None:
+                # Deterministic candidates deliberately start with unresolved
+                # source/entry prose.  A model candidate for the same sink must
+                # enrich that durable row instead of creating a second model
+                # validation and independent review.
+                for key in ("entry", "source", "sink", "control", "hypothesis"):
+                    old = str(duplicate.get(key, ""))
+                    if ("待由" in old or "候选" in old or not old.strip()) and raw.get(key):
+                        duplicate[key] = deepcopy(raw[key])
+                for key in ("hops", "needs", "evidence_ids"):
+                    combined, seen = [], set()
+                    for item in [*duplicate.get(key, []), *deepcopy(raw.get(key, []))]:
+                        marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                        if marker not in seen:
+                            seen.add(marker)
+                            combined.append(item)
+                    duplicate[key] = combined
+                duplicate["merged_source_ids"] = list(dict.fromkeys([
+                    *duplicate.get("merged_source_ids", [duplicate.get("source_id")]), source_id]))
                 continue
             sketches.append({**deepcopy(raw), "id": sketch_id, "status": "queued_for_validation",
                              "source_id": source_id})
         return sketches
+
+    @staticmethod
+    def _same_path_candidate(left, right):
+        """Conservatively identify model/deterministic descriptions of one sink."""
+        def normalized(value):
+            return " ".join(str(value or "").lower().split())
+
+        exact_fields = ("candidate_type", "entry", "source", "sink")
+        if tuple(normalized(left.get(key)) for key in exact_fields) == tuple(
+                normalized(right.get(key)) for key in exact_fields):
+            return True
+        if left.get("candidate_type") != right.get("candidate_type"):
+            return False
+
+        anchors = ("${", "executequery", "runtime.exec", "processbuilder", "files.readstring",
+                   "files.writestring", "objectinputstream", "xmldecoder", "parseexpression",
+                   "template.process", "initialcontext().lookup", "jwt.decode", ".location(",
+                   "mediatype.text_html", "changerole", "management-exposure-wildcard",
+                   "h2-console-enabled", "include-stacktrace", "password:", "client-secret")
+        def anchor(row):
+            text = normalized(row.get("deterministic_anchor") or row.get("sink"))
+            return next((item for item in anchors if item in text), "")
+
+        # The closest named hop distinguishes multiple mapper statements and
+        # multiple sink-bearing methods in the same source file.
+        def hop_symbols(row):
+            return {token.lower() for hop in row.get("hops", [])
+                    for token in re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", str(hop))
+                    if len(token) > 2}
+        common = hop_symbols(left) & hop_symbols(right)
+        sink_anchor = anchor(left)
+        if sink_anchor and sink_anchor == anchor(right) and common:
+            return True
+        # Non-sink access-control candidates have no canonical operation. Their
+        # concrete entry method plus a shared call-path node is the stable key.
+        left_entry, right_entry = normalized(left.get("entry")), normalized(right.get("entry"))
+        return bool(common and left_entry and left_entry == right_entry and "待由" not in left_entry)
 
     def pending(self):
         return any(not future.done() for future in self.futures.values())
@@ -871,6 +924,22 @@ class AgentTeam:
                 self.changed.clear()
                 self.changed.wait(1)
             task = self.store.get(self.task_id)
+            retryable = next((row for row in task.get("agent_tasks", [])
+                              if row.get("role") == "scope" and row.get("status") == "failed"
+                              and row.get("retry_count", 0) < 1), None)
+            if retryable is not None:
+                # Scope gaps affect final completeness. Retry once in the same
+                # task with a fresh conversation/model while retaining prior
+                # calls and the immutable seed evidence for traceability.
+                from secval.services.agent_worker import run_worker
+                prior = retryable.get("prior_calls", 0) + retryable.get("calls", 0)
+                self.update_worker(retryable["id"], status="queued", calls=0, messages=[],
+                                   result=None, stop_reason=None, retry_count=1,
+                                   prior_calls=prior, evidence=deepcopy(self.seed_evidence),
+                                   events=deepcopy(self.seed_events))
+                self.futures[retryable["id"]] = self.pool.submit(
+                    run_worker, self, retryable["id"])
+                continue
             queued = [row for row in task.get("path_sketches", [])
                       if row.get("status") == "queued_for_validation"]
             covered = {path_id for packet in task.get("validation_packets", [])

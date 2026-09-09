@@ -1,4 +1,5 @@
 import json
+import logging
 from concurrent.futures import as_completed
 from dataclasses import asdict
 from time import monotonic
@@ -23,6 +24,9 @@ from secval.models.threat_model import ThreatModel
 from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context, tool_reply_for_model
 from secval.services.audit_progress import audit_progress, request_budget_note
+
+
+logger = logging.getLogger(__name__)
 from secval.services.audit_stages import record_stage
 from secval.services.baseline_audit import run_baseline
 from secval.services.file_review_coverage import file_review_coverage
@@ -350,7 +354,7 @@ def _run_task(store, task_id, model, tools, team=None):
                         for row in result.get("rows", []):
                             verified = CodeEvidence.from_read(row)
                             evidence[verified.id] = row
-                    events.append({"step": store.get(task_id)["model_calls"], "task_id": task_id, "phase": "validation", "tool": action.tool,
+                    events.append({"step": store.get(task_id).get("model_calls", 0), "task_id": task_id, "phase": "validation", "tool": action.tool,
                                    "arguments": action.arguments, "result": result})
                     store.update(task_id, events=events, evidence=evidence,
                                  read_coverage=read_coverage(evidence),
@@ -615,6 +619,7 @@ def _run_task(store, task_id, model, tools, team=None):
         store.update(task_id, status="failed", stop_reason="evidence_service_failed",
                      error="固定取证视图或搜索服务不可用；未切换实时数据，已有记录已保存")
     except Exception:  # noqa: BLE001 -- 后台任务边界必须落盘失败，且不泄露供应端异常正文
+        logger.exception("audit task %s failed at internal execution boundary", task_id)
         if store.get(task_id)["status"] != "cancelled":
             store.update(
                 task_id,

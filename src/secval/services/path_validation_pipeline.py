@@ -190,6 +190,35 @@ def _paths_from_tool_result(result):
     return paths
 
 
+def _path_priority(packet, path):
+    name = path.rsplit("/", 1)[-1]
+    text = " ".join(str(value) for sketch in packet.get("sketches", [])
+                    for value in [sketch.get("entry", ""), sketch.get("source", ""),
+                                  *sketch.get("hops", []), sketch.get("sink", ""),
+                                  sketch.get("control", "")])
+    mentioned = name.rsplit(".", 1)[0].lower() in text.lower()
+    roles = (("controller", 0), ("request", 1), ("dto", 1), ("service", 2),
+             ("validator", 3), ("factory", 3), ("repository", 4), ("mapper", 4),
+             ("handler", 4), ("application.", 5))
+    role = next((rank for marker, rank in roles if marker in name.lower()), 6)
+    return (0 if mentioned else 1, role, path)
+
+
+def _continuation_operations(batch_result, *, limit=4):
+    operations = []
+    for item in batch_result.get("items", []):
+        if item.get("tool") != "read_file" or not isinstance(item.get("result"), dict):
+            continue
+        result = item["result"]
+        row = next(iter(result.get("rows", [])), {})
+        next_offset = row.get("next_char_offset")
+        path = item.get("arguments", {}).get("path")
+        if path and isinstance(next_offset, int):
+            operations.append({"tool": "read_file",
+                               "arguments": {"path": path, "char_offset": next_offset}})
+    return operations[:limit]
+
+
 def supplement_packet_evidence(team, packet, base_evidence):
     """Build a bounded evidence closure from declared gaps and source relations."""
     declared = []
@@ -221,9 +250,7 @@ def supplement_packet_evidence(team, packet, base_evidence):
         paths = [path for path in _paths_from_tool_result(located) if path not in read_paths]
         # Definitions close paths; files merely importing the same class are
         # secondary. Put Foo.java/Foo.xml ahead of broad textual matches.
-        frontier = set(frontier_terms)
-        paths.sort(key=lambda path: (0 if path.rsplit("/", 1)[-1].rsplit(".", 1)[0] in frontier else 1,
-                                     path))
+        paths.sort(key=lambda path: _path_priority(packet, path))
         paths = paths[:8]
         reads = [{"tool": "read_file", "arguments": {"path": path}} for path in paths]
         before = len(evidence)
@@ -233,6 +260,12 @@ def supplement_packet_evidence(team, packet, base_evidence):
             team.collect_evidence("batch_evidence", read_result, evidence)
             total_operations += len(reads)
             read_paths.update(paths)
+            continuations = _continuation_operations(read_result)
+            if continuations:
+                continuation_result = team.read_tool("batch_evidence", {"operations": continuations})
+                read_results.append(continuation_result)
+                team.collect_evidence("batch_evidence", continuation_result, evidence)
+                total_operations += len(continuations)
         if len(evidence) == before:
             stagnant += 1
             if stagnant >= 2:
@@ -249,15 +282,46 @@ def supplement_packet_evidence(team, packet, base_evidence):
     return evidence, trace
 
 
-def model_evidence_view(evidence, *, content_limit=32000):
+def _evidence_priority(row, sketches):
+    path = row.get("relative_path", "")
+    name = path.rsplit("/", 1)[-1].lower()
+    roles = (("controller", 0), ("request", 1), ("dto", 1), ("service", 2),
+             ("validator", 3), ("factory", 3), ("repository", 4), ("mapper", 4),
+             ("handler", 4), ("application.", 5))
+    role = next((rank for marker, rank in roles if marker in name), 6)
+    terms = {token.lower() for sketch in sketches for value in
+             [sketch.get("entry", ""), sketch.get("source", ""), *sketch.get("hops", []),
+              sketch.get("sink", ""), sketch.get("control", "")]
+             for token in re.findall(r"[A-Za-z_$][A-Za-z0-9_$]{3,}", str(value))}
+    content = row.get("content", "").lower()
+    relevance = sum(term in content or term in name for term in terms)
+    return (role, -relevance, path, row.get("start_line", 0))
+
+
+def model_evidence_view(evidence, *, sketches=None, content_limit=32000):
     """Keep canonical full evidence server-side; send only a bounded packet view."""
     rows, remaining = [], content_limit
-    for row in evidence.values():
+    ranked = sorted(evidence.values(), key=lambda row: _evidence_priority(row, sketches or []))
+    # Reserve the first pass for one segment from every path role. A long
+    # controller must not consume the entire packet before DTO/service/sink.
+    first, rest, seen_roles = [], [], set()
+    for row in ranked:
+        role = _evidence_priority(row, sketches or [])[0]
+        if role not in seen_roles:
+            seen_roles.add(role)
+            first.append(row)
+        else:
+            rest.append(row)
+    ordered = [*first, *rest]
+    first_ids = {id(row) for row in first}
+    reserved_take = max(1200, min(8000, content_limit // max(1, len(first))))
+    for row in ordered:
         projected = {key: row.get(key) for key in (
             "evidence_id", "chunk_id", "relative_path", "start_line", "end_line",
             "content_sha256", "truncated") if key in row}
         content = row.get("content", "")
-        take = min(len(content), max(0, remaining), 8000)
+        per_row = reserved_take if id(row) in first_ids else 8000
+        take = min(len(content), max(0, remaining), per_row)
         projected["content"] = content[:take]
         projected["packet_truncated"] = take < len(content)
         remaining -= take
@@ -265,6 +329,46 @@ def model_evidence_view(evidence, *, content_limit=32000):
         if remaining <= 0:
             break
     return rows
+
+
+def deterministic_config_result(packet, sketches, evidence):
+    """Prove exact dangerous static configuration values without HTTP-path fiction."""
+    if packet.get("surface") != "configuration" or not sketches:
+        return None
+    content = "\n".join(row.get("content", "") for row in evidence.values())
+    outcomes = []
+    for sketch in sketches:
+        anchor = sketch.get("deterministic_anchor", "")
+        supported = False
+        sink = anchor
+        if anchor in {"management-exposure-wildcard", "management.endpoints.web.exposure"}:
+            supported = bool(re.search(r"(?m)^\s*include:\s*['\"]?\*", content))
+            sink = 'management.endpoints.web.exposure.include="*"'
+        elif anchor in {"h2-console-enabled", "h2.console.enabled"}:
+            supported = bool(re.search(r"(?ms)^\s*h2:\s*\n\s+console:\s*\n\s+enabled:\s*true", content))
+            sink = "spring.h2.console.enabled=true"
+        elif anchor == "include-stacktrace":
+            supported = bool(re.search(
+                r"(?m)^\s*include-stacktrace:\s*(?:always|true)\b", content, re.IGNORECASE))
+            sink = "server.error.include-stacktrace=always"
+        elif anchor in {"password:", "client-secret"}:
+            key = "password" if anchor == "password:" else "client-secret"
+            match = re.search(rf"(?m)^\s*{re.escape(key)}:\s*['\"]?([^\s'\"]+)", content)
+            supported = bool(match and not match.group(1).startswith("${"))
+            sink = key + "=<hardcoded-value>"
+        if not supported:
+            return None
+        refs = list(evidence)
+        outcomes.append({
+            "path_id": sketch["id"], "outcome": "supported",
+            "assessment": f"已批准配置文件中存在静态危险值 {sink}",
+            "counterevidence": "运行时 profile 与网络暴露只限制可达性，不消除静态配置缺陷",
+            "limitations": ["实际部署是否激活该配置仍需运行环境确认"],
+            "evidence_ids": refs, "resolved_entry": sketch["entry"],
+            "resolved_source": "应用静态配置", "resolved_hops": [anchor],
+            "resolved_sink": sink, "resolved_controls": [sketch["control"]],
+        })
+    return {"packet_id": packet["id"], "outcomes": outcomes}
 
 
 def parse_validation_result(raw, packet, sketches, evidence):
@@ -278,7 +382,9 @@ def parse_validation_result(raw, packet, sketches, evidence):
     for row in raw["outcomes"]:
         required = {"path_id", "outcome", "assessment", "counterevidence",
                     "limitations", "evidence_ids"}
-        if not isinstance(row, dict) or set(row) - required - {"finding"} or not required <= set(row):
+        resolved = {"resolved_entry", "resolved_source", "resolved_hops",
+                    "resolved_sink", "resolved_controls"}
+        if not isinstance(row, dict) or set(row) - required - resolved - {"finding"} or not required <= set(row):
             raise ModelOutputError("路径验证字段不完整")
         if row["outcome"] not in {"supported", "refuted", "inconclusive"}:
             raise ModelOutputError("路径验证outcome不合法")
@@ -286,6 +392,12 @@ def parse_validation_result(raw, packet, sketches, evidence):
         require_text(row["counterevidence"], "counterevidence")
         require_strings(row["limitations"], "limitations", empty=True)
         require_refs(row["evidence_ids"], evidence)
+        for name in ("resolved_entry", "resolved_source", "resolved_sink"):
+            if name in row:
+                require_text(row[name], name, 500)
+        for name in ("resolved_hops", "resolved_controls"):
+            if name in row:
+                require_strings(row[name], name, empty=True)
         if row["outcome"] == "supported" and "finding" in row:
             parse_worker_finding(row["finding"], evidence)
         elif "finding" in row:
@@ -298,6 +410,12 @@ def build_supported_findings(team, packet, result, sketches, evidence):
                  if row["outcome"] == "supported" and "finding" not in row]
     for row in supported:
         sketch = next(item for item in sketches if item["id"] == row["path_id"])
+        entry = row.get("resolved_entry") or sketch["entry"]
+        source = row.get("resolved_source") or sketch["source"]
+        hops = row.get("resolved_hops") or sketch["hops"]
+        sink = row.get("resolved_sink") or sketch["sink"]
+        controls = row.get("resolved_controls") or [sketch["control"]]
+        control = "；".join(controls)
         refs = list(dict.fromkeys(row["evidence_ids"]))
         root = refs[0]
         cwe = {"object_level_authorization": "CWE-639", "function_level_authorization": "CWE-862",
@@ -314,36 +432,36 @@ def build_supported_findings(team, packet, result, sketches, evidence):
             "jndi_injection", "expression_injection", "template_injection",
             "jwt_verification_bypass", "arbitrary_file_write"} else "medium"
         row["finding"] = {
-            "boundary": {"entry": sketch["entry"], "attacker_control": sketch["source"],
-                         "asset": sketch["sink"], "trust_transition": f"{sketch['source']} 到 {sketch['sink']}",
-                         "expected_control": sketch["control"], "observed_control": row["assessment"],
+            "boundary": {"entry": entry, "attacker_control": source,
+                         "asset": sink, "trust_transition": f"{source} 到 {sink}",
+                         "expected_control": control, "observed_control": row["assessment"],
                          "unknowns": limitations, "evidence_ids": refs},
-            "investigation": {"question": sketch["hypothesis"], "control_to_check": sketch["control"],
+            "investigation": {"question": sketch["hypothesis"], "control_to_check": control,
                               "counterevidence": row["counterevidence"],
                               "next_check": "独立复核证据引用、攻击前提和严重性",
                               "unknowns": limitations, "evidence_ids": refs},
             "review": {"outcome": "supported", "assessment": row["assessment"],
                        "counterevidence": row["counterevidence"], "limitations": limitations,
                        "evidence_ids": refs},
-            "detail": {"title": f"{sketch['candidate_type']}：{sketch['entry']}",
+            "detail": {"title": f"{sketch['candidate_type']}：{entry}",
                        "summary": sketch["hypothesis"],
                        "rootCause": {"summary": row["assessment"], "evidenceRefs": refs},
                        "attackPath": {"summary": sketch["hypothesis"],
                            "dataflow": {"summary": "输入沿已验证路径到达安全敏感操作",
-                               "source": sketch["source"], "transformations": sketch["hops"],
-                               "sink": sketch["sink"], "outcome": sketch["hypothesis"], "evidenceRefs": refs},
-                           "reachability": {"summary": f"攻击者可从{sketch['entry']}触发路径",
-                               "attacker": sketch["source"], "entrypoint": sketch["entry"],
+                               "source": source, "transformations": hops,
+                               "sink": sink, "outcome": sketch["hypothesis"], "evidenceRefs": refs},
+                           "reachability": {"summary": f"攻击者可从{entry}触发路径",
+                               "attacker": source, "entrypoint": entry,
                                "preconditions": ["满足验证记录中的攻击前提"],
                                "outcome": sketch["hypothesis"], "evidenceRefs": refs},
-                           "impact": {"level": severity, "rationale": sketch["sink"]},
+                           "impact": {"level": severity, "rationale": sink},
                            "likelihood": {"level": "medium", "rationale": row["assessment"]},
                            "limitations": limitations, "evidenceRefs": refs},
                        "severity": {"level": severity, "rationale": sketch["hypothesis"]},
                        "confidence": {"level": "high", "rationale": "独立路径验证判定supported"},
-                       "remediation": f"在{sketch['entry']}到{sketch['sink']}之间实施并集中复用{sketch['control']}。",
+                       "remediation": f"在{entry}到{sink}之间实施并集中复用{control}。",
                        "remediationTests": ["增加未授权或恶意输入被拒绝的回归测试"],
-                       "preventiveControls": [sketch["control"]],
+                       "preventiveControls": controls,
                        "evidenceNotes": [{"evidence_id": ref,
                            "role": "root_control" if ref == root else "propagation",
                            "explanation": "路径验证引用的源码证据"} for ref in refs],
@@ -366,6 +484,8 @@ security_context是用户明确给定的攻击者能力、入口、调用关系�
 outcomes必须逐项覆盖packet.path_ids且不得添加其他路径。非supported项严格只包含以下六个字段：
 {\"path_id\":\"原样复制路径ID\",\"outcome\":\"inconclusive\",\"assessment\":\"一句证据判断\",\
 \"counterevidence\":\"一句最强反证或尚未核实的控制\",\"limitations\":[\"具体缺失证据\"],\"evidence_ids\":[\"只能复制输入中的真实evidence_id\"]}。
+supported项在上述字段外尽量回写证据已解析的路径字段：resolved_entry、resolved_source、resolved_hops、
+resolved_sink、resolved_controls；前三个单值字段是字符串，后两个复数字段是字符串数组。不得猜测未证明的节点。
 最外层严格为{\"packet_id\":\"原样复制包ID\",\"outcomes\":[...]}。
 只有现有证据完整证明可利用控制失效时才可supported。验证器不要输出finding；后端会只为supported路径
 启动专用Finding Builder。证据不足必须判inconclusive，不得为了进入后续阶段夸大结论。
@@ -415,7 +535,8 @@ def run_validation_packet(team, packet_id):
                  stop_reason=trace.get("stop_reason"),
                  metadata={"stagnant_rounds": trace.get("stagnant_rounds", 0),
                            "evidence_count": len(selected)})
-    payload = {"packet": packet, "paths": sketches, "evidence": model_evidence_view(selected),
+    payload = {"packet": packet, "paths": sketches,
+               "evidence": model_evidence_view(selected, sketches=sketches),
                "objective": task.get("objective"),
                "security_context": task.get("security_context"),
                "supplied_threat_model": task.get("supplied_threat_model"),
@@ -436,17 +557,19 @@ def run_validation_packet(team, packet_id):
                             "path-validation:" + packet_id + ":repair")
 
     try:
-        try:
-            raw = team.request(model, [{"role": "system", "content": VALIDATION_PROMPT},
-                                       {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-                               "path-validation:" + packet_id)
-            result = parse_validation_result(raw, packet, sketches, selected)
-        except (ModelOutputError, ModelRequestError):
-            # Empty content, malformed JSON and one provider timeout are all
-            # recoverable with the same much smaller deterministic packet.
-            # The retry is explicit in model_requests and happens at most once.
-            raw = compact_request()
-            result = parse_validation_result(raw, packet, sketches, selected)
+        result = deterministic_config_result(packet, sketches, selected)
+        if result is None:
+            try:
+                raw = team.request(model, [{"role": "system", "content": VALIDATION_PROMPT},
+                                           {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+                                   "path-validation:" + packet_id)
+                result = parse_validation_result(raw, packet, sketches, selected)
+            except (ModelOutputError, ModelRequestError):
+                # Empty content, malformed JSON and one provider timeout are all
+                # recoverable with the same much smaller deterministic packet.
+                # The retry is explicit in model_requests and happens at most once.
+                raw = compact_request()
+                result = parse_validation_result(raw, packet, sketches, selected)
         result = build_supported_findings(team, packet, result, sketches, selected)
         team.persist_path_validation(packet_id, result, selected)
         requests = team.store.get(team.task_id).get("model_requests", [])

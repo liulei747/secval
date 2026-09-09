@@ -37,6 +37,12 @@ Python继承返回链进一步复用祖先闭包：子类没有重写方法时�
 模型适配器新增显式`SECVAL_AUDIT_TOOL_PROTOCOL=native`模式，向OpenAI兼容Chat Completions发送统一目录生成的只读取证函数声明，校验每轮单个`tool_calls`，并在下一请求用原`tool_call_id`和`role=tool`回传结果。后端内部及检查点仍保存供应商无关的标准动作，恢复时不伪造丢失的原生调用状态；记录边界、调查和报告继续使用严格JSON契约。默认保持`json`兼容模式，原生与流式同时配置会明确拒绝，未替用户切换当前供应商，也未为此调用真实模型。
 原生工具协议现可跨进程恢复：检查点仍只保存供应商无关的标准工具动作和结果；新模型实例会从相邻记录重建一组稳定、成对的`assistant tool_calls`与`tool`消息。当前任务已经移除的工具不会因旧检查点而恢复。进程未重启时继续沿用供应商原始调用编号；重启后使用本地确定性编号，只用于同一次请求内配对，不冒充供应商保存的历史状态。
 审计测试页面补齐报告收口展示：任务进入needs_review、failed、cancelled、interrupted或budget_exhausted后，页面直接读取导出接口并显示`completion.state`和`pendingReasons`，不再把部分报告与已登记检查项收口混在完整JSON里。续跑按钮复用同一组调用/时长预算输入。页面参数由离线路由测试锁定，真实容器页面已复查包含新提示。
+## 2026-09-09 安全分析内核架构重构
+
+SinkSpring 优化证明当前候选发现层存在固定 Sink、Spring 配置键、命名约定和自然语言去重等过拟合，不再以补齐单一 benchmark 作为主路线。目标架构拆分为统一事实层、八类专用分析器、Framework Model Pack / Control Contract / Business Invariant 语义层，以及统一 Candidate 与六态不可变 Ledger 结果层。
+
+当前只完成架构设计与进度看板，运行代码仍是旧流水线，不得把目标架构描述为已经实现。详见[安全分析内核架构](security-analysis-kernel-architecture.md)和[重构进度看板](security-analysis-kernel-roadmap.md)。
+
 ## 真实模型团队协作验收（2026-09-06）
 团队orders合成Demo已通过正式Web接口完整运行：上传、索引、混合搜索3项命中、3个并发Agent协作审计，38次真实模型调用后提交报告（needs_review/report_submitted）。合成仓库`secval-web-check-d1b14226baf44af3a0d25499965b36d2`保留供页面查看，没有删除或覆盖用户索引。
 核心结论符合预期：OrderService.fetch缺少归属校验被列为supported候选并附文件证据；SafeOrderService被正确当作反证对照；快照内无调用者/入口被如实列为可达性未知，而不是直接宣称可利用。报告为partial_report：存在待收口调查和未登记文件审阅声明，完整覆盖未声明。
