@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "race-blind-01", "controls": [], "isolation": "read_committed", "transaction": true},
+    {"id": "race-blind-02", "controls": ["atomic"], "isolation": "read_committed", "transaction": true},
+    {"id": "race-blind-03", "controls": ["atomic"], "transaction": true}
+  ]
+}

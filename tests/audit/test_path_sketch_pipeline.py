@@ -121,7 +121,7 @@ def test_config_channel_supports_exact_static_values_without_http_path():
             "control": "生产响应禁用堆栈信息"}
     packet = {"id": "validation:cfg", "surface": "configuration"}
     result = deterministic_config_result(packet, [path], config)
-    assert result["outcomes"][0]["outcome"] == "supported"
+    assert result["outcomes"][0]["outcome"] == "inconclusive"
     assert result["outcomes"][0]["resolved_sink"] == "server.error.include-stacktrace=always"
 
 
@@ -145,18 +145,23 @@ def test_path_sketch_is_validated_and_materialized_once():
     normalized["needs"] = [{"kind": "source_search", "target": "DAO data scope",
                             "reason": "DAO data scope", "required_for": "validation"}]
     assert rows == [{**normalized, "id": "agent-2:path-1", "status": "queued_for_validation",
-                     "source_id": "agent-2"}]
+                     "source_id": "agent-2", "origins": [{
+                         "kind": "model", "producer": "agent-2", "role": "primary",
+                         "capability": "bootstrap_hint",
+                     }]}]
     assert AgentTeam._merge_path_sketches(rows, parsed, "agent-2") == rows
 
 
 def test_model_path_enriches_matching_deterministic_sink_instead_of_duplication():
     deterministic = {
-        **sketch(), "id": "system:path-1", "source_id": "deterministic_sink_inventory",
+        **sketch(), "id": "system:path-1", "source_id": "legacy_sink_bootstrap",
         "status": "queued_for_validation", "candidate_type": "command_injection",
         "surface": "command_execution", "entry": "待由调用者闭包解析的入口",
         "source": "外部可控输入候选", "hops": ["executeCommand"],
         "sink": "NativeProcessHandler.java 中的 Runtime.exec",
         "deterministic_anchor": "Runtime.exec",
+        "origins": [{"kind": "heuristic", "producer": "legacy_sink_bootstrap",
+                     "role": "primary", "capability": "bootstrap_hint"}],
     }
     model = {**sketch(), "candidate_type": "command_injection",
              "surface": "command_execution", "entry": "POST /api/system/backup",
@@ -167,7 +172,8 @@ def test_model_path_enriches_matching_deterministic_sink_instead_of_duplication(
     assert rows[0]["entry"] == "POST /api/system/backup"
     assert rows[0]["source"] == "request.backupPath"
     assert rows[0]["hops"] == ["executeCommand", "createBackup"]
-    assert rows[0]["merged_source_ids"] == ["deterministic_sink_inventory", "agent-2"]
+    assert rows[0]["merged_source_ids"] == ["legacy_sink_bootstrap", "agent-2"]
+    assert [origin["kind"] for origin in rows[0]["origins"]] == ["heuristic", "model"]
 
 
 def test_validation_accepts_evidence_bound_resolved_path_fields():
@@ -229,6 +235,13 @@ def test_information_disclosure_alias_is_normalized():
         "data_exposure", "sensitive_data_exposure")
 
 
+def test_unrecognized_candidate_type_is_preserved_as_unknown_for_validation():
+    raw = sketch()
+    raw.update(surface="HTTP /diagnostics", candidate_type="任意文件读取")
+    parsed = parse_work_result(result(raw), {"e-1": {}})["path_sketches"][0]
+    assert (parsed["surface"], parsed["candidate_type"]) == ("other", "unknown")
+
+
 def test_related_paths_share_one_bounded_validation_packet():
     rows = []
     for number in range(2):
@@ -278,6 +291,9 @@ def test_deterministic_sink_inventory_creates_durable_candidates():
     assert {(row["candidate_type"], row["deterministic_anchor"]) for row in rows} >= {
         ("sql_injection", "${"), ("xss", "MediaType.TEXT_HTML")}
     assert all(row["status"] == "queued_for_validation" for row in rows)
+    assert all(row["origins"] == [{"kind": "heuristic", "producer": "legacy_sink_bootstrap",
+                                   "role": "primary", "capability": "bootstrap_hint"}]
+               for row in rows)
     assert {row["hops"][0] for row in rows if row["candidate_type"] == "sql_injection"} == {
         "searchProducts", "listProducts"}
     assert any(row["candidate_type"] == "object_level_authorization" for row in rows)

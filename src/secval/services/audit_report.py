@@ -95,6 +95,8 @@ def export_audit_report(task):
         "threatModel": {"summary": supplied} if supplied else deepcopy(generated),
         "generatedThreatModel": deepcopy(generated),
         "baseline": deepcopy(task.get("baseline")),
+        "kernelRuntime": deepcopy(task.get("kernel_runtime")),
+        "legacyReportReadOnly": task.get("legacy_report_read_only", False),
         "summary": report.get("summary", "未生成最终摘要"),
         "findings": report.get("findings", []) if task.get("report") else [],
         "hypotheses": report.get("hypotheses", []),

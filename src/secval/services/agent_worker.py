@@ -146,7 +146,11 @@ def run_worker(team, worker_id):
                     raise ModelOutputError("子任务仅允许读取工具和阶段成果提交工具")
             except ModelOutputError as error:
                 errors += 1
-                if errors >= 3:
+                # Probe responses are large and occasionally lose their native
+                # tool envelope. Use the worker's existing five-call ceiling as
+                # the hard bound instead of discarding the scope after only
+                # three format repairs.
+                if errors >= 5:
                     raise
                 if worker.get("mode") == "prefill_path_probe":
                     compact_rows = []

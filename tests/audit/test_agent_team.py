@@ -848,7 +848,7 @@ def test_workers_cannot_create_grandchildren(tmp_path):
         workers = service.get(task["id"])["agent_tasks"]
         assert len(workers) == 2
         assert all(worker["status"] == "failed" for worker in workers)
-        assert all(worker["calls"] == 3 for worker in workers)
+        assert all(worker["calls"] == 5 for worker in workers)
     finally:
         service.close()
 

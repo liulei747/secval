@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "blind-javaspring-01", "source": "cases/01"},
+    {"id": "blind-javaspring-02", "source": "cases/02"},
+    {"id": "blind-javaspring-03", "source": "cases/03"}
+  ],
+  "oracle": "supplied outside this directory after results are frozen"
+}

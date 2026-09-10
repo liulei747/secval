@@ -27,6 +27,7 @@ class AuditService:
         executor: Executor,
         model_factory: Callable[[], AuditModelPort],
         tools_factory: Callable[[str, str], EvidenceToolsPort],
+        kernel_runner=None,
         heartbeat_interval=5,
         lease_seconds=20,
     ):
@@ -34,6 +35,7 @@ class AuditService:
         self.executor = executor
         self.model_factory = model_factory
         self.tools_factory = tools_factory
+        self.kernel_runner = kernel_runner
         self.lock = Lock()
         self.future: Future | None = None
         self.active_task_id: str | None = None
@@ -227,6 +229,8 @@ class AuditService:
                 run_task(self.store, task_id, TeamModel(team, model), tools, team)
             else:
                 run_task(self.store, task_id, RecordedAuditModel(model, self.store, task_id), tools)
+            if self.kernel_runner is not None:
+                self.kernel_runner(self.store, task_id)
         except Exception:
             if team is not None:
                 team.close()

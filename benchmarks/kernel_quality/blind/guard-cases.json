@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "blind-javaspring-01",
+      "contract": true,
+      "nodes": [
+        {"id": "entry", "attributes": {"entry": true}},
+        {"id": "operation", "attributes": {"requires_guard": "authorization", "guarded_value_id": "resource"}}
+      ],
+      "edges": [["entry", "operation"]]
+    },
+    {
+      "id": "blind-javaspring-02",
+      "contract": true,
+      "nodes": [
+        {"id": "entry", "attributes": {"entry": true}},
+        {"id": "control", "attributes": {"signature": "control.check", "checked_value_ids": ["resource"]}},
+        {"id": "operation", "attributes": {"requires_guard": "authorization", "guarded_value_id": "resource"}}
+      ],
+      "edges": [["entry", "control"], ["control", "operation"]]
+    },
+    {
+      "id": "blind-javaspring-03",
+      "contract": false,
+      "nodes": [
+        {"id": "entry", "attributes": {"entry": true}},
+        {"id": "operation", "attributes": {"requires_guard": "authorization", "guarded_value_id": "resource"}}
+      ],
+      "edges": [["entry", "operation"]]
+    }
+  ]
+}

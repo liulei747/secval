@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "frozen_at": "2026-09-09",
+  "subject": "legacy SinkSpring regression only",
+  "source": {
+    "comparison": "reports/sinkspring-comparison-87c69ad6.md",
+    "comparison_sha256": "0a952282507dd1f9e93153c3c23f9ac862856fcd71b7cb3147d2787929835a11",
+    "prior_report": "reports/sinkspring-report-6e253f09.json",
+    "prior_report_sha256": "4090fb221da7d5c7a2d2a699f7c25a2ee948c74b2f6ba1ab7f5d8862903435ef"
+  },
+  "metrics": {
+    "positive_hits": 31,
+    "positive_total": 35,
+    "recall": 0.8857,
+    "code_recall": 0.8667,
+    "config_recall": 1.0,
+    "safe_control_false_positives": 0,
+    "safe_control_total": 7,
+    "formal_findings": 36
+  },
+  "policy": "Historical regression evidence only; it cannot approve a rule or replace blind evaluation."
+}

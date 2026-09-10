@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "blind-javaspring-01",
+      "layers": [
+        {"name": "base", "format": "yaml", "path": "conf/base.yml", "precedence": 100,
+         "content": "service:\n  mode: active\nnetwork:\n  scope: public\naccess:\n  control: optional\n"}
+      ]
+    },
+    {
+      "id": "blind-javaspring-02",
+      "layers": [
+        {"name": "base", "format": "properties", "path": "conf/base.properties", "precedence": 100,
+         "content": "service.mode=active\nnetwork.scope=public\naccess.control=optional"}
+      ],
+      "deployment": {"access.control": "required"}
+    },
+    {
+      "id": "blind-javaspring-03",
+      "layers": [
+        {"name": "base", "format": "toml", "path": "conf/base.toml", "precedence": 100,
+         "content": "[service]\nmode=\"${SERVICE_MODE}\"\n[network]\nscope=\"public\""}
+      ]
+    }
+  ]
+}

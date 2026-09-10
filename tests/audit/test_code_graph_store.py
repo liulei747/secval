@@ -68,6 +68,24 @@ def test_find_symbol_is_bound_to_repository_snapshot_and_run():
     assert "snapshot_id_id" not in arguments
 
 
+def test_export_calls_is_bound_to_repository_snapshot_and_run():
+    driver = MagicMock()
+    driver.execute_query.return_value = ([{
+        "caller": "App.entry", "callee": "Service.run",
+        "caller_path": "src/App.java", "call_line": 12,
+        "resolution_strategy": "JOERN_CPG",
+    }], None, None)
+
+    rows = CodeGraphStore(driver).export_calls("repo", "snap", "run-1")
+
+    assert rows[0]["resolution_strategy"] == "JOERN_CPG"
+    arguments = driver.execute_query.call_args.kwargs
+    assert arguments["repository_id"] == "repo"
+    assert arguments["snapshot_id"] == "snap"
+    assert arguments["index_run_id"] == "run-1"
+    assert "CALLS" in driver.execute_query.call_args.args[0]
+
+
 def test_joern_call_edges_are_key_resolved_and_tree_sitter_verified():
     driver = MagicMock()
     store = CodeGraphStore(driver)

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "k9-blind-01", "engine": "structural", "value": "obsolete", "context": "protected-data", "signature": "Cipher.select(java.lang.String)"},
+    {"id": "k9-blind-02", "engine": "structural", "value": "current", "context": "protected-data", "signature": "Cipher.select(java.lang.String)"},
+    {"id": "k9-blind-03", "engine": "structural", "context": "protected-data", "signature": "Cipher.select(java.lang.String)"},
+    {"id": "k9-blind-04", "engine": "dependency", "version": "3.2.0", "call": true, "reachable": true, "activation": "on"},
+    {"id": "k9-blind-05", "engine": "dependency", "version": "4.0.0", "call": true, "reachable": true, "activation": "on"},
+    {"id": "k9-blind-06", "engine": "dependency", "version": "3.2.0", "call": false, "reachable": false}
+  ]
+}

@@ -376,6 +376,19 @@ class CodeGraphStore:
              index_run_id=index_run_id, name=name, limit=limit, database_="neo4j")
         return [dict(record) for record in records]
 
+    def export_calls(self, repository_id, snapshot_id, index_run_id, limit=10000):
+        """Export all resolved calls in one immutable snapshot for fact ingestion."""
+        records, _, _ = self.driver.execute_query("""
+        MATCH (s:CodeSnapshot {repository_id: $repository_id, snapshot_id: $snapshot_id,
+                              index_run_id: $index_run_id})-[:CONTAINS]->(callerFile:CodeFile)
+                              -[:DECLARES]->(caller:CodeSymbol)-[relation:CALLS]->(callee:CodeSymbol)
+        RETURN caller.name AS caller, callee.name AS callee, callerFile.path AS caller_path,
+               relation.line AS call_line, relation.resolution_strategy AS resolution_strategy
+        ORDER BY caller_path, call_line, caller, callee LIMIT $limit
+        """, repository_id=str(repository_id), snapshot_id=str(snapshot_id),
+             index_run_id=index_run_id, limit=limit, database_="neo4j")
+        return [dict(record) for record in records]
+
     @staticmethod
     def _describe_call_matches(records):
         """说明已保存调用边的匹配依据；类型标注也不等于运行时证明。"""

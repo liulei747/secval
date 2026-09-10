@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "ledger-blind-01", "unknowns": [], "decision": "confirmed", "evidence": ["path-1"]},
+    {"id": "ledger-blind-02", "unknowns": [], "decision": "defended", "evidence": ["guard-1"], "all_paths_covered": true},
+    {"id": "ledger-blind-03", "unknowns": ["callee implementation missing"], "decision": "confirmed", "evidence": ["model-note"]}
+  ]
+}

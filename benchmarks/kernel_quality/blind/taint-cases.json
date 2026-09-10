@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "blind-javaspring-01",
+      "nodes": [
+        {"id": "boundary.value", "signature": "input"},
+        {"id": "application.forward"},
+        {"id": "persistence.execute", "signature": "database"}
+      ],
+      "edges": [["boundary.value", "application.forward"], ["application.forward", "persistence.execute"]]
+    },
+    {
+      "id": "blind-javaspring-02",
+      "nodes": [
+        {"id": "boundary.value", "signature": "input"},
+        {"id": "query.bind", "signature": "parameterized"},
+        {"id": "persistence.execute", "signature": "database"}
+      ],
+      "edges": [["boundary.value", "query.bind"], ["query.bind", "persistence.execute"]]
+    },
+    {
+      "id": "blind-javaspring-03",
+      "nodes": [
+        {"id": "boundary.value", "signature": "input", "path": "src/Feature.java"},
+        {"id": "library.forward", "path": "src/Feature.java"}
+      ],
+      "edges": [["boundary.value", "library.forward"]],
+      "gaps": [{"category": "missing_dependency", "reason": "external implementation unavailable", "path": "src/Feature.java", "line": 3, "symbol": "Library.forward"}]
+    }
+  ]
+}

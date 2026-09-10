@@ -1,0 +1,6 @@
+# Benchmark names, routes, class names, and answer IDs forbidden in src/secval.
+SinkSpring
+sinkspring-bench
+case-a
+case-b
+case-c

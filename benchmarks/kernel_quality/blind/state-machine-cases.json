@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "state-blind-01", "from": "queued", "to": "released", "conditions": [], "effects": ["journal"], "initial_known": true},
+    {"id": "state-blind-02", "from": "queued", "to": "released", "conditions": ["authorized"], "effects": ["journal"], "initial_known": true},
+    {"id": "state-blind-03", "to": "released", "conditions": ["authorized"], "effects": ["journal"], "initial_known": false}
+  ]
+}

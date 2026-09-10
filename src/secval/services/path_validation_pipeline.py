@@ -4,7 +4,12 @@ import hashlib
 import json
 import re
 
-from secval.models.agent_work import parse_worker_finding, require_refs, require_strings, require_text
+from secval.models.agent_work import (
+    parse_worker_finding,
+    require_refs,
+    require_strings,
+    require_text,
+)
 from secval.models.audit_contracts import ModelOutputError, ModelRequestError
 from secval.services.audit_stages import record_stage
 
@@ -332,7 +337,7 @@ def model_evidence_view(evidence, *, sketches=None, content_limit=32000):
 
 
 def deterministic_config_result(packet, sketches, evidence):
-    """Prove exact dangerous static configuration values without HTTP-path fiction."""
+    """Preserve legacy config matches as review hints during the analyzer migration."""
     if packet.get("surface") != "configuration" or not sketches:
         return None
     content = "\n".join(row.get("content", "") for row in evidence.values())
@@ -360,10 +365,11 @@ def deterministic_config_result(packet, sketches, evidence):
             return None
         refs = list(evidence)
         outcomes.append({
-            "path_id": sketch["id"], "outcome": "supported",
-            "assessment": f"已批准配置文件中存在静态危险值 {sink}",
+            "path_id": sketch["id"], "outcome": "inconclusive",
+            "assessment": f"旧启发式在已批准配置文件中匹配到静态值 {sink}",
             "counterevidence": "运行时 profile 与网络暴露只限制可达性，不消除静态配置缺陷",
-            "limitations": ["实际部署是否激活该配置仍需运行环境确认"],
+            "limitations": ["bootstrap hint不能单独确认漏洞",
+                            "等待Configuration Engine解析覆盖链、消费组件和部署暴露"],
             "evidence_ids": refs, "resolved_entry": sketch["entry"],
             "resolved_source": "应用静态配置", "resolved_hops": [anchor],
             "resolved_sink": sink, "resolved_controls": [sketch["control"]],

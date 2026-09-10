@@ -1,0 +1,18 @@
+name: kernel-quality
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  anti-overfit-and-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: python benchmarks/kernel_quality/anti_overfit.py
+      - run: pytest -q tests/audit/test_candidate_provenance.py tests/audit/test_kernel_quality_gates.py tests/audit/test_kernel_runtime_migration.py tests/facts tests/semantics tests/analyzers tests/adjudication tests/evaluation
+      - run: ruff check src/secval/facts src/secval/frontends src/secval/semantics src/secval/analyzers src/secval/candidates src/secval/adjudication src/secval/reporting src/secval/evaluation src/secval/services/kernel_runtime.py src/secval/models/candidate_provenance.py benchmarks/kernel_quality tests/facts tests/semantics tests/analyzers tests/adjudication tests/evaluation tests/audit/test_candidate_provenance.py tests/audit/test_kernel_quality_gates.py tests/audit/test_kernel_runtime_migration.py

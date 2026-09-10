@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source": "blind/cases/02",
+  "variants": [
+    {"name": "renamed", "operations": [
+      {"kind": "rename_identifier", "path": "ProfileController.java", "from": "profileId", "to": "recordKey"}
+    ]},
+    {"name": "wrapped", "operations": [
+      {"kind": "wrap_text", "path": "ProfileController.java", "text": "repository.find(profileId)", "before": "java.util.Objects.requireNonNull(", "after": ")"}
+    ]},
+    {"name": "api-replaced", "operations": [
+      {"kind": "replace_api", "path": "ProfileController.java", "from": "repository.find(profileId)", "to": "repository.load(profileId)"},
+      {"kind": "replace_api", "path": "ProfileController.java", "from": "Profile find(long profileId)", "to": "Profile load(long profileId)"}
+    ]},
+    {"name": "rearranged", "operations": [
+      {"kind": "move", "path": "ProfileController.java", "to": "feature/account/ProfileController.java"}
+    ]},
+    {"name": "config-format", "operations": [
+      {"kind": "replace_config_format", "path": "application.properties", "to": "application.yml", "content": "server:\n  error:\n    include-message: never\n"}
+    ]}
+  ]
+}

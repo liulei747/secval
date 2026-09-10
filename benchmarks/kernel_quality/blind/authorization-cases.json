@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "blind-javaspring-01", "contract": true,
+      "nodes": [
+        {"id": "entry", "attributes": {"entry": true}},
+        {"id": "principal", "attributes": {"trust": "server_authenticated"}},
+        {"id": "resource"},
+        {"id": "operation", "attributes": {"operation": "read", "requires_guard": "authorization", "authorization_requirements": ["ownership"]}}
+      ],
+      "edges": [["entry", "operation"]]
+    },
+    {
+      "id": "blind-javaspring-02", "contract": true,
+      "nodes": [
+        {"id": "entry", "attributes": {"entry": true}},
+        {"id": "principal", "attributes": {"trust": "server_authenticated"}},
+        {"id": "resource"},
+        {"id": "guard", "attributes": {"signature": "policy.check", "proves_constraints": ["ownership"]}},
+        {"id": "operation", "attributes": {"operation": "read", "requires_guard": "authorization", "authorization_requirements": ["ownership"]}}
+      ],
+      "edges": [["entry", "guard"], ["guard", "operation"]]
+    },
+    {
+      "id": "blind-javaspring-03", "contract": false,
+      "nodes": [
+        {"id": "entry", "attributes": {"entry": true}},
+        {"id": "principal", "attributes": {"trust": "unknown"}},
+        {"id": "resource"},
+        {"id": "operation", "attributes": {"operation": "write", "requires_guard": "authorization", "authorization_requirements": ["tenant"]}}
+      ],
+      "edges": [["entry", "operation"]]
+    }
+  ]
+}

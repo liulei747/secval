@@ -10,6 +10,7 @@ from secval.infrastructure.audit.source_snapshot_store import SourceSnapshotStor
 from secval.infrastructure.audit.sqlite_audit_store import AuditStore
 from secval.models.audit import AuditUnavailableError
 from secval.services.audit_service import AuditService
+from secval.services.kernel_bootstrap import create_kernel_runner
 
 
 def create_source_snapshot_store():
@@ -38,4 +39,6 @@ def create_audit_service(connection, search_service=None, graph_store=None, joer
         lambda repo, snapshot: EvidenceTools(connection, repo, snapshot, source_store,
                                              search_service=search_service, graph_store=graph_store,
                                              joern_client=joern_client),
+        kernel_runner=create_kernel_runner(settings.database_path, source_store=source_store,
+                                           graph_store=graph_store),
     )

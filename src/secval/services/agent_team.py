@@ -11,9 +11,14 @@ from time import monotonic
 
 from secval.models.agent_work import parse_assignment
 from secval.models.audit import EvidenceServiceError
-from secval.models.audit_contracts import CodeEvidence, ModelOutputError, ModelRequestError
+from secval.models.audit_contracts import (
+    CodeEvidence,
+    ModelOutputError,
+    ModelRequestError,
+)
 from secval.models.audit_scope import in_scope
 from secval.models.audit_tools import iter_evidence_rows
+from secval.models.candidate_provenance import append_candidate_origin, candidate_origin
 from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context
 from secval.services.audit_stages import record_stage
@@ -74,7 +79,7 @@ _SINK_RULES = (
 
 
 def deterministic_sink_sketches(packets):
-    """Create durable candidates for every located dangerous syntax occurrence."""
+    """Create bootstrap hints for dangerous syntax; this does not confirm a vulnerability."""
     sketches, seen = [], set()
     for packet in packets:
         for evidence_id, row in packet.get("evidence", {}).items():
@@ -112,8 +117,8 @@ def deterministic_sink_sketches(packets):
                         {"kind": "callers", "target": symbol,
                          "reason": "反向连接危险操作到所有外部入口", "required_for": "source_to_sink"})
                     digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
-                    sketches.append({
-                    "id": "system:path-" + digest, "source_id": "deterministic_sink_inventory",
+                    sketches.append(append_candidate_origin({
+                    "id": "system:path-" + digest, "source_id": "legacy_sink_bootstrap",
                     "status": "queued_for_validation", "surface": surface,
                     "candidate_type": candidate_type, "entry": "待由调用者闭包解析的入口",
                     "source": "外部可控输入候选", "hops": [symbol],
@@ -121,7 +126,8 @@ def deterministic_sink_sketches(packets):
                     "hypothesis": f"外部输入可能到达 {anchor} 且缺少{control}",
                     "needs": [need], "evidence_ids": [evidence_id],
                     "deterministic_anchor": anchor,
-                    })
+                    }, candidate_origin("heuristic", "legacy_sink_bootstrap",
+                                        capability="bootstrap_hint")))
             # Resource identifiers at HTTP boundaries are authorization
             # candidates even though they do not end in a traditional sink.
             if path.endswith("Controller.java"):
@@ -143,8 +149,8 @@ def deterministic_sink_sketches(packets):
                         continue
                     seen.add(identity)
                     digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
-                    sketches.append({
-                        "id": "system:path-" + digest, "source_id": "deterministic_sink_inventory",
+                    sketches.append(append_candidate_origin({
+                        "id": "system:path-" + digest, "source_id": "legacy_sink_bootstrap",
                         "status": "queued_for_validation", "surface": "authorization",
                         "candidate_type": "object_level_authorization", "entry": method,
                         "source": ", ".join(identifiers), "hops": [method],
@@ -153,7 +159,8 @@ def deterministic_sink_sketches(packets):
                         "needs": [{"kind": "callees", "target": method,
                                    "reason": "确认资源查询及所有权条件", "required_for": "authorization"}],
                         "evidence_ids": [evidence_id], "deterministic_anchor": anchor,
-                    })
+                    }, candidate_origin("heuristic", "legacy_sink_bootstrap",
+                                        capability="bootstrap_hint")))
             if path.endswith((".yml", ".yaml")):
                 yaml_rules = (
                     (r"(?m)^\s*include:\s*['\"]?\*", "management-exposure-wildcard",
@@ -169,8 +176,8 @@ def deterministic_sink_sketches(packets):
                         continue
                     seen.add(identity)
                     digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
-                    sketches.append({
-                        "id": "system:path-" + digest, "source_id": "deterministic_sink_inventory",
+                    sketches.append(append_candidate_origin({
+                        "id": "system:path-" + digest, "source_id": "legacy_sink_bootstrap",
                         "status": "queued_for_validation", "surface": "configuration",
                         "candidate_type": "security_misconfiguration", "entry": path,
                         "source": "应用配置", "hops": [anchor], "sink": anchor,
@@ -178,7 +185,8 @@ def deterministic_sink_sketches(packets):
                         "needs": [{"kind": "route_guard", "target": path,
                                    "reason": "确认环境覆盖和暴露条件", "required_for": "reachability"}],
                         "evidence_ids": [evidence_id], "deterministic_anchor": anchor,
-                    })
+                    }, candidate_origin("heuristic", "legacy_sink_bootstrap",
+                                        capability="bootstrap_hint")))
     return sketches
 
 
@@ -473,6 +481,7 @@ class AgentTeam:
                                        prior_calls=worker.get("prior_calls", 0) + worker.get("calls", 0))
                 elif (self.task.get("parent_task_id")
                       and self.task.get("finding_detail_history")
+                      and worker.get("result")
                       and worker["status"] != "completed"):
                     # A resumed task with a complete canonical candidate should spend
                     # its new budget on report submission and independent validation,
@@ -648,7 +657,7 @@ class AgentTeam:
                     # The probe never explores with tools, but providers may
                     # need bounded schema repair. Do not discard a whole surface
                     # after one malformed JSON response.
-                    if worker_mode == "prefill_path_probe" and worker["calls"] >= 4:
+                    if worker_mode == "prefill_path_probe" and worker["calls"] >= 5:
                         raise TeamStopped("prefill_probe_single_call")
                 worker["calls"] += 1
                 self.store.update(self.task_id, agent_tasks=workers)
@@ -766,7 +775,9 @@ class AgentTeam:
             sketches = self._merge_path_sketches(
                 self.store.get(self.task_id).get("path_sketches", []), progress, progress_id
             )
-            from secval.services.path_validation_pipeline import build_validation_packets
+            from secval.services.path_validation_pipeline import (
+                build_validation_packets,
+            )
             self.store.update(self.task_id, agent_tasks=tasks, path_sketches=sketches,
                               validation_packets=build_validation_packets(sketches))
         self.changed.set()
@@ -780,7 +791,9 @@ class AgentTeam:
         with self.lock:
             task = self.store.get(self.task_id)
             sketches = self._merge_path_sketches(task.get("path_sketches", []), result, worker_id)
-            from secval.services.path_validation_pipeline import build_validation_packets
+            from secval.services.path_validation_pipeline import (
+                build_validation_packets,
+            )
             self.store.update(self.task_id, path_sketches=sketches,
                               validation_packets=build_validation_packets(sketches))
             packets = self.store.get(self.task_id).get("validation_packets", [])
@@ -796,7 +809,8 @@ class AgentTeam:
         from secval.services.path_validation_pipeline import run_validation_packet
         for packet in self.store.get(self.task_id).get("validation_packets", []):
             key = "path-validation:" + packet["id"]
-            if packet.get("status") == "queued" and key not in self.futures:
+            previous = self.futures.get(key)
+            if packet.get("status") == "queued" and (previous is None or previous.done()):
                 record_stage(self.store, self.task_id, "path_validation", "queued",
                              scope_id=packet["id"], name="路径验证",
                              completed_units=0, total_units=len(packet.get("path_ids", [])),
@@ -855,9 +869,18 @@ class AgentTeam:
                     duplicate[key] = combined
                 duplicate["merged_source_ids"] = list(dict.fromkeys([
                     *duplicate.get("merged_source_ids", [duplicate.get("source_id")]), source_id]))
+                enriched = append_candidate_origin(
+                    duplicate,
+                    candidate_origin("model", source_id, role="corroborating",
+                                     capability="bootstrap_hint"),
+                )
+                duplicate.clear()
+                duplicate.update(enriched)
                 continue
-            sketches.append({**deepcopy(raw), "id": sketch_id, "status": "queued_for_validation",
-                             "source_id": source_id})
+            sketch = {**deepcopy(raw), "id": sketch_id, "status": "queued_for_validation",
+                      "source_id": source_id}
+            sketches.append(append_candidate_origin(
+                sketch, candidate_origin("model", source_id, capability="bootstrap_hint")))
         return sketches
 
     @staticmethod
@@ -948,7 +971,9 @@ class AgentTeam:
             missing = [row for row in queued if row["id"] not in covered]
             if not missing:
                 break
-            from secval.services.path_validation_pipeline import build_validation_packets
+            from secval.services.path_validation_pipeline import (
+                build_validation_packets,
+            )
             packets = [*task.get("validation_packets", []), *build_validation_packets(missing)]
             self.store.update(self.task_id, validation_packets=packets)
             self.schedule_path_validations()
@@ -1091,11 +1116,12 @@ class AgentTeam:
         if boundaries is None or investigations is None or finding_details is None:
             return
         from dataclasses import asdict
+
         from secval.models.agent_work import parse_worker_finding
-        from secval.models.security_boundary import SecurityBoundary
+        from secval.models.finding_detail import parse_finding_detail
         from secval.models.investigation import Investigation
         from secval.models.investigation_review import InvestigationReview
-        from secval.models.finding_detail import parse_finding_detail
+        from secval.models.security_boundary import SecurityBoundary
 
         for number, raw in enumerate(result.get("findings", []), 1):
             origin = f"{source_id}:finding-{number}"

@@ -1,0 +1,32 @@
+{
+  "task_id": "51d342a2e3954b76849ebc1a16b351dd",
+  "repository_id": "sinkspring-bench-eval",
+  "snapshot_id": "sinkspring-bench-eval-v1",
+  "status": "needs_review",
+  "phase": "reporting",
+  "stop_reason": "report_submitted",
+  "completion_state": "partial_report",
+  "complete_security_audit": false,
+  "elapsed_seconds": 1864.623469,
+  "model_calls": 109,
+  "token_usage": {
+    "promptTokens": 838554,
+    "completionTokens": 345571,
+    "totalTokens": 1184125,
+    "requestsCountedBySupplier": 105,
+    "requestsTotal": 109,
+    "note": "仅供应商上报的整数用量被累计；缺失字段的请求不计入对应合计"
+  },
+  "request_statuses": {
+    "invalid_output": 12,
+    "request_failed": 4,
+    "response_returned": 93
+  },
+  "path_sketches": 111,
+  "path_validations": 111,
+  "candidate_details": 28,
+  "independent_reviews": 28,
+  "formal_findings": 16,
+  "kernel_runtime_present": true,
+  "legacy_report_read_only": true
+}

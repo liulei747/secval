@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "migration-blind-01", "budget": 1, "unknowns": [], "legacy": false},
+    {"id": "migration-blind-02", "budget": 0, "unknowns": [], "legacy": true},
+    {"id": "migration-blind-03", "budget": 1, "unknowns": ["dynamic callee missing"], "legacy": false}
+  ]
+}

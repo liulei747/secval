@@ -132,7 +132,10 @@ def parse_work_result(raw, evidence):
             raise ModelOutputError("path_sketch字段不完整")
         sketch["candidate_type"] = type_aliases.get(sketch["candidate_type"], sketch["candidate_type"])
         if sketch["candidate_type"] not in allowed_types:
-            raise ModelOutputError("path_sketch.candidate_type不合法")
+            # The free-text hypothesis still needs independent path validation.
+            # Preserve an otherwise well-formed probe as an explicitly unknown
+            # type instead of losing the whole security surface to a taxonomy typo.
+            sketch["candidate_type"] = "unknown"
         sketch["surface"] = surface_aliases.get(sketch["surface"], sketch["surface"])
         if sketch["surface"] not in allowed_surfaces:
             # The controlled candidate type already carries the security surface.
