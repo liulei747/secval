@@ -14,17 +14,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from secval.infrastructure.audit.sqlite_audit_store import AuditStore
+from secval.models.agent_work import parse_work_result
 from secval.models.audit import AuditTaskInput
 from secval.models.audit_contracts import ModelOutputError, ModelRequestError
-from secval.models.agent_work import parse_work_result
 from secval.services.agent_team import AgentTeam, TeamStopped
 from secval.services.agent_worker import _merge_progress_results
-from secval.services.audit_service import AuditService
-from tests.audit.report_only_model import ReportOnlyModel
 from secval.services.audit_report import export_audit_report
+from secval.services.audit_runner import _review_covers_detail
+from secval.services.audit_service import AuditService
+from secval.services.finding_report import detail_digest
 from secval.web_api.audit_api import router
+from tests.audit.report_only_model import ReportOnlyModel
 from tests.audit.test_service_flow import candidate_detail
-
 
 DEMO = Path(__file__).parents[1] / "demo_projects" / "team_orders"
 
@@ -309,6 +310,17 @@ def test_validation_phase_resume_reuses_matching_reviews(tmp_path):
         service.close()
 
 
+def test_only_exact_candidate_detail_review_can_block_rescheduling():
+    detail = candidate_detail()
+    review = {"detail_sha256": detail_digest(detail), "outcome": "supported"}
+    assert _review_covers_detail(review, detail)
+    changed = deepcopy(detail)
+    changed["title"] = "续跑后补全的候选详情"
+    assert not _review_covers_detail(review, changed)
+    assert not _review_covers_detail({**review, "error": "旧请求失败"}, detail)
+    assert not _review_covers_detail(review, None)
+
+
 def test_finished_second_review_is_saved_before_first_finishes(tmp_path):
     second_saved = Event()
     first_saw_saved = Event()
@@ -360,6 +372,28 @@ def make_team(tmp_path, max_steps=12):
     store.update(task["id"], status="running", scope={"index_run_id": "demo-run", "source_snapshot_id": "demo-source"})
     team = AgentTeam(store, task["id"], MagicMock, demo_tools())
     return team, store, task["id"]
+
+
+def test_resume_adds_missing_independent_baseline_worker(tmp_path):
+    from concurrent.futures import Future
+
+    team, store, task_id = make_team(tmp_path)
+    done = Future()
+    done.set_result(None)
+    team.pool = type("StubPool", (), {
+        "submit": staticmethod(lambda fn, *args, **kwargs: done),
+        "shutdown": staticmethod(lambda wait=True, cancel_futures=True: None),
+    })()
+    store.update(task_id, agent_tasks=[{
+        "id": "agent-1", "role": "architecture", "status": "completed", "calls": 1,
+        "assignment": {}, "evidence": {}, "events": [], "result": result(),
+    }])
+    try:
+        team.start()
+        roles = [row["role"] for row in store.get(task_id)["agent_tasks"]]
+        assert roles == ["architecture", "baseline"]
+    finally:
+        team.close()
 
 
 def test_budget_reservations_are_atomic(tmp_path):
@@ -423,6 +457,168 @@ def test_reserved_worker_resumes_once_for_validation(tmp_path):
         assert team.resume_for_validation() is False
     finally:
         team.close()
+
+
+def test_step_limited_baseline_is_prioritized_for_validation_resume(tmp_path):
+    """步数受限的独立基线必须获得一次收尾机会，否则报告会永久为partial。"""
+
+    team, store, task_id = make_team(tmp_path, max_steps=20)
+    from concurrent.futures import Future
+    done = Future()
+    done.set_result(None)
+    team.pool = type("StubPool", (), {"submit": staticmethod(lambda fn, *a, **k: done),
+                                      "shutdown": staticmethod(lambda wait=True, cancel_futures=True: None)})()
+    store.update(task_id, model_calls=10, agent_tasks=[
+        {"id": "agent-1", "role": "investigator", "status": "stopped", "calls": 5,
+         "assignment": {}, "evidence": {}, "events": [], "stop_reason": "reserved_for_main"},
+        {"id": "agent-2", "role": "baseline", "status": "stopped", "calls": 5,
+         "assignment": {}, "evidence": {}, "events": [], "stop_reason": "worker_step_limit"},
+    ])
+    try:
+        assert team.resume_for_validation() is True
+        workers = {row["id"]: row for row in store.get(task_id)["agent_tasks"]}
+        assert workers["agent-2"]["status"] == "queued"
+        assert workers["agent-2"]["validation_resume"] is True
+        assert workers["agent-1"]["status"] == "stopped"
+    finally:
+        team.close()
+
+
+def test_truncated_baseline_output_is_resumed_for_finalization(tmp_path):
+    """已保存上下文的截断基线输出可在报告前重试一次。"""
+
+    team, store, task_id = make_team(tmp_path, max_steps=20)
+    from concurrent.futures import Future
+    done = Future()
+    done.set_result(None)
+    team.pool = type("StubPool", (), {"submit": staticmethod(lambda fn, *a, **k: done),
+                                      "shutdown": staticmethod(lambda wait=True, cancel_futures=True: None)})()
+    store.update(task_id, model_calls=8, agent_tasks=[{
+        "id": "agent-1", "role": "baseline", "status": "failed", "calls": 5,
+        "assignment": {}, "evidence": {}, "events": [],
+        "messages": [{"role": "system", "content": "saved"}],
+        "stop_reason": "model_output_truncated",
+    }])
+    try:
+        assert team.resume_for_validation() is True
+        worker = store.get(task_id)["agent_tasks"][0]
+        assert worker["status"] == "queued"
+        assert worker["validation_resume"] is True
+        assert worker["stop_reason"] is None
+    finally:
+        team.close()
+
+
+def test_large_continuation_schedules_bounded_file_review_workers(tmp_path):
+    team, store, task_id = make_team(tmp_path, max_steps=30)
+    inventory = [{"path": f"src/F{number}.java", "status": "captured", "digest": str(number)}
+                 for number in range(13)]
+    store.update(task_id, parent_report_submitted=True, source_inventory=inventory,
+                 approved_config_paths=[])
+
+    def read_tool(name, arguments):
+        assert name == "read_file"
+        row = demo_row()
+        path = arguments["path"]
+        row.update(relative_path=path, chunk_id="file-" + path,
+                   evidence_id="e-" + path, content="class F {}", content_sha256=path)
+        return {"rows": [row]}
+
+    submitted = []
+    team.read_tool = read_tool
+    team.submit = lambda role, assignment, **kwargs: submitted.append(
+        (role, assignment, kwargs)) or {"worker_id": str(len(submitted))}
+    try:
+        team.schedule_file_reviews()
+        assert len(submitted) == 2
+        assert all(role == "file_review" for role, _, _ in submitted)
+        assert sum(len(kwargs["evidence"]) for _, _, kwargs in submitted) == 13
+        assert all(len(kwargs["evidence"]) <= 8 for _, _, kwargs in submitted)
+        assert all(kwargs["mode"] == "prefill_file_review" for _, _, kwargs in submitted)
+    finally:
+        team.close()
+
+
+def test_file_review_retry_includes_direct_project_companions(tmp_path):
+    team, store, task_id = make_team(tmp_path, max_steps=30)
+    controller = "src/main/java/example/PageController.java"
+    service = "src/main/java/example/PageService.java"
+    mapper = "src/main/java/example/ProductMapper.java"
+    mapper_xml = "src/main/resources/mapper/ProductMapper.xml"
+    filler = [f"src/main/java/example/F{number}.java" for number in range(9)]
+    inventory = [{"path": path, "status": "captured", "digest": path}
+                 for path in [controller, service, mapper, mapper_xml, *filler]]
+    store.update(
+        task_id,
+        parent_report_submitted=True,
+        source_inventory=inventory,
+        approved_config_paths=[],
+        file_reviews=[{"path": path, "status": "reviewed_static"}
+                      for path in [service, mapper_xml, *filler]],
+    )
+
+    contents = {
+        controller: "import example.PageService;\nclass PageController {}",
+        service: "class PageService {}",
+        mapper: "interface ProductMapper {}",
+        mapper_xml: "<mapper namespace='example.ProductMapper'/>",
+    }
+
+    def read_tool(name, arguments):
+        assert name == "read_file"
+        path = arguments["path"]
+        row = demo_row()
+        row.update(relative_path=path, chunk_id="file-" + path,
+                   evidence_id="e-" + path, content=contents[path], content_sha256=path)
+        return {"rows": [row]}
+
+    submitted = []
+    team.read_tool = read_tool
+    team.submit = lambda role, assignment, **kwargs: submitted.append(
+        (role, assignment, kwargs)) or {"worker_id": str(len(submitted))}
+    try:
+        team.schedule_file_reviews()
+        assert len(submitted) == 1
+        evidence = submitted[0][2]["evidence"]
+        assert {row["relative_path"] for row in evidence.values()} == {
+            controller, service, mapper, mapper_xml,
+        }
+    finally:
+        team.close()
+
+
+def test_completed_file_rereview_upgrades_prior_partial_status():
+    row = demo_row()
+    evidence = {row["evidence_id"]: row}
+    reviews = [{
+        "file_id": row["chunk_id"],
+        "path": row["relative_path"],
+        "assessment": "dependency was not in the original packet",
+        "controls_checked": ["input handling"],
+        "unknowns": ["callee missing"],
+        "content_sha256": row["content_sha256"],
+        "status": "partial",
+        "agent_id": "old-worker",
+    }]
+    result = {
+        "questions": [],
+        "unknowns": ["other files remain outside this packet"],
+        "reviewed_files": [{
+            "file_id": row["chunk_id"],
+            "assessment": "file and direct dependency were reviewed together",
+            "controls_checked": ["input handling", "callee behavior"],
+            "unknowns": [],
+        }],
+    }
+    baseline = {"questions": [], "unknowns": []}
+
+    AgentTeam._merge_worker_result(
+        {"id": "new-worker"}, result, evidence, baseline, reviews, "new-worker:result")
+
+    assert len(reviews) == 1
+    assert reviews[0]["status"] == "reviewed_static"
+    assert reviews[0]["agent_id"] == "new-worker"
+    assert reviews[0]["assessment"] == "file and direct dependency were reviewed together"
 
 
 def test_review_channel_uses_last_remaining_call_but_cannot_exceed_budget(tmp_path):
@@ -593,7 +789,7 @@ def test_worker_progress_is_saved_and_delivered_before_worker_finishes(tmp_path)
 @pytest.mark.parametrize("field,value", [("repository_id", "other"), ("snapshot_id", "other"),
                                          ("index_run_id", "other"), ("source_snapshot_id", "other")])
 def test_worker_evidence_cannot_change_scope(tmp_path, field, value):
-    team, store, task_id = make_team(tmp_path)
+    team, _store, _task_id = make_team(tmp_path)
     row = demo_row()
     row[field] = value
     evidence = {}
@@ -793,6 +989,7 @@ def test_failed_worker_can_redeliver_after_resume(tmp_path):
 def test_demo_archive_excludes_answer_document():
     import io
     import zipfile
+
     from benchmarks.audit_quality.run_team_demo import demo_case
     from benchmarks.audit_quality.run_web_check import archive_bytes
     with zipfile.ZipFile(io.BytesIO(archive_bytes(demo_case()))) as archive:

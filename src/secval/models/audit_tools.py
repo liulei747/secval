@@ -1,5 +1,27 @@
 """三个审计阶段共用的只读工具定义；不声明尚未接入的分析能力。"""
 
+# [SECVAL-OVERFIT-6] 审计面向模型暴露的工具集从 14 个收敛到 3 个核心工具。
+# 依据：对比 Codex Security 的做法——它只给模型一个离线搜索命令加整文件读取，
+# 靠"读完整源码 + 明确的漏洞类别清单"达到高召回，而不是靠大量窄接口。
+# 原设计里模型要把有限推理预算花在"该调哪个工具"上，且每次只拿到片段，
+# 无法看到完整控制流（例如"这个方法虽被调用，但调用点在 if (!isAdmin) 内"）。
+#
+# 保留：search_source（字面搜索）、read_file（整文件）、list_files（清单）
+# 其余工具仍在本文件登记参数与说明，供验证管线、图页面与人工核查使用，
+# 但不再进入模型的工具目录。恢复方式：把它们加回 AUDIT_MODEL_TOOLS。
+CORE_TOOLS = ("search_source", "read_file", "list_files")
+
+# 模型审计目录：只暴露核心三件套。
+AUDIT_MODEL_TOOLS = CORE_TOOLS
+
+# 非模型工具：供 path_validation_pipeline、图页面、人工核查使用。
+ANALYSIS_ONLY_TOOLS = (
+    "batch_evidence", "list_chunks", "search_text", "find_symbol", "read_chunk",
+    "hybrid_search", "find_code_relations", "find_code_callers", "find_code_callees",
+    "find_code_type_relations", "find_dispatch_targets", "find_code_calls",
+    "find_data_paths", "find_entry_points",
+)
+
 READ_TOOL_ARGUMENTS = {
     "batch_evidence": {"operations"},
     "list_chunks": {"offset"},
@@ -55,19 +77,18 @@ def iter_evidence_rows(tool_name, result):
 
 
 def read_tool_prompt():
-    """从同一份定义生成说明，减少基线、主调查与复核之间的偏差。"""
-    lines = [READ_TOOL_DESCRIPTIONS[name] for name in READ_TOOL_ARGUMENTS]
-    lines.append('一次只返回一个合法JSON对象；需要多个文件或符号时优先使用batch_evidence，避免逐项消耗模型调用。')
-    lines.append("读取可选start_line/end_line（从1开始，两端包含），不能与char_offset混用；按行超12000字符须缩小范围。")
+    """从同一份定义生成说明，减少基线、主调查与复核之间的偏差。
+
+    [SECVAL-OVERFIT-6] 只描述模型实际可用的核心工具。图与路径工具仍保留在
+    READ_TOOL_ARGUMENTS 中供验证管线内部使用，但不再写进模型提示词——
+    提示词里出现但不可调用的工具会误导模型，并诱导它依赖线索代替源码。
+    """
+    lines = [READ_TOOL_DESCRIPTIONS[name] for name in AUDIT_MODEL_TOOLS]
+    lines.append("读取可选start_line/end_line（从1开始，两端包含），按行超12000字符须缩小范围。")
     lines.append("使用返回的next_offset或next_char_offset续读；只能引用读取返回的evidence_id，不自行拼写。")
     lines.append("搜索结果是线索，不是已读证据；源码阅读不等于完成安全审计。")
-    lines.append("可用工具以scope_info.tools为准；hybrid_search不返回源码、也不调用外部重排序，命中后必须read_chunk或read_file取证。")
+    lines.append("必须完整读取文件后再判断结论；只搜索到片段不构成已审阅。")
     lines.append("缺少绑定或配置授权时文件工具不可用，不得回退当前磁盘。")
-    lines.append(
-        "关系图工具的推荐顺序：先find_code_relations定位符号声明，再用find_code_callers/"
-        "find_code_callees沿调用方向展开；需要继承链或动态分派时用find_code_type_relations与"
-        "find_dispatch_targets（可用receiver_type按调用点类型收窄）。它们只输出位置线索，"
-        "可能含同名误报或漏掉外部实现，必须read_file或read_chunk核实后才能作为证据。"
-    )
-    lines.append("Joern路径是另一类静态线索，同样必须读取源码核实。")
+    lines.append("危险操作的识别依据是你所读到的仓库实际代码与该仓库的威胁模型，"
+                 "不依赖任何外部提供的危险函数清单。")
     return "\n".join(lines)

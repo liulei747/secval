@@ -15,6 +15,9 @@ class AuditSettings:
     thinking: str | None = None
     stream: bool = False
     tool_protocol: str = "json"
+    # B腿（安全分析内核）开关。方案4-B：默认关闭，内核不再参与生产审计。
+    # 关闭时 kernel_runner 不会被注入 AuditService，报告中的 kernelRuntime 为 disabled。
+    kernel_dual_run: bool = False
 
     def __post_init__(self):
         if self.thinking not in (None, "enabled", "disabled"):
@@ -33,8 +36,12 @@ def load_audit_settings():
     stream = os.getenv("SECVAL_AUDIT_STREAM", "false").strip().lower()
     if stream not in ("true", "false"):
         raise ValueError("审计流式接收开关必须为true或false")
+    kernel = os.getenv("SECVAL_KERNEL_DUAL_RUN", "false").strip().lower()
+    if kernel not in ("true", "false"):
+        raise ValueError("内核双跑开关必须为true或false")
     return AuditSettings(
         stream=stream == "true",
+        kernel_dual_run=kernel == "true",
         api_url=os.getenv("SECVAL_AUDIT_API_URL", ""),
         api_key=os.getenv("SECVAL_AUDIT_API_KEY", ""),
         model_name=os.getenv("SECVAL_AUDIT_MODEL", "glm-5.3-flash"),

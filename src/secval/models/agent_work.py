@@ -131,12 +131,38 @@ def parse_work_result(raw, evidence):
         if not isinstance(sketch, dict) or set(sketch) != required:
             raise ModelOutputError("path_sketch字段不完整")
         sketch["candidate_type"] = type_aliases.get(sketch["candidate_type"], sketch["candidate_type"])
+        inferred_candidate_type = False
+        if sketch["candidate_type"] == "unknown":
+            text = " ".join(str(sketch.get(key, "")) for key in
+                            ("entry", "sink", "control", "hypothesis")).lower()
+            signatures = (
+                ("xxe", ("xxe", "external entity", "外部实体", "doctype")),
+                ("unsafe_deserialization", ("readobject", "反序列化", "xmldecoder", "objectinputstream")),
+                ("ssrf", ("ssrf", "元数据服务", "出站请求", "内网地址")),
+                ("xss", ("xss", "脚本执行", "text/html", "html转义")),
+                ("sql_injection", ("sql注入", "sql injection", "order by", "动态sql")),
+                ("command_injection", ("命令注入", "shell命令", "runtime.getruntime().exec")),
+                ("jwt_verification_bypass", ("jwt", "none算法", "算法混淆", "伪造role")),
+                ("object_level_authorization", ("idor", "归属", "任意账户", "越权读取")),
+                ("path_traversal", ("路径穿越", "../", "越出", "任意文件读取")),
+                ("arbitrary_file_write", ("任意文件写", "任意路径写", "覆盖任意文件", "zip slip")),
+                ("hardcoded_secret", ("硬编码", "明文写入", "client-secret", "静态泄露")),
+                ("sensitive_data_exposure", ("敏感数据暴露", "信息泄露", "堆栈", "回显")),
+                ("security_misconfiguration", ("actuator", "h2-console", "配置缺陷")),
+            )
+            sketch["candidate_type"] = next(
+                (kind for kind, needles in signatures if any(needle in text for needle in needles)),
+                "unknown",
+            )
+            inferred_candidate_type = sketch["candidate_type"] != "unknown"
         if sketch["candidate_type"] not in allowed_types:
             # The free-text hypothesis still needs independent path validation.
             # Preserve an otherwise well-formed probe as an explicitly unknown
             # type instead of losing the whole security surface to a taxonomy typo.
             sketch["candidate_type"] = "unknown"
         sketch["surface"] = surface_aliases.get(sketch["surface"], sketch["surface"])
+        if inferred_candidate_type and sketch["surface"] == "other":
+            sketch["surface"] = surface_by_type[sketch["candidate_type"]]
         if sketch["surface"] not in allowed_surfaces:
             # The controlled candidate type already carries the security surface.
             # Providers often put a descriptive title in ``surface``; normalize

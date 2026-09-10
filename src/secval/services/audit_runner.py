@@ -5,7 +5,6 @@ from dataclasses import asdict
 from time import monotonic
 
 from secval.interfaces.audit import AuditModelPort, AuditStorePort, EvidenceToolsPort
-from secval.models.audit_tools import READ_TOOL_ARGUMENTS, iter_evidence_rows, read_tool_prompt
 from secval.models.audit import EvidenceServiceError
 from secval.models.audit_contracts import (
     CodeEvidence,
@@ -14,10 +13,15 @@ from secval.models.audit_contracts import (
     ModelRequestError,
     ToolAction,
 )
+from secval.models.audit_tools import (
+    READ_TOOL_ARGUMENTS,
+    iter_evidence_rows,
+    read_tool_prompt,
+)
 from secval.models.file_review import parse_file_review
 from secval.models.finding_detail import parse_finding_detail
 from secval.models.investigation import Investigation
-from secval.models.investigation_review import InvestigationReview, OUTCOME_GUIDANCE
+from secval.models.investigation_review import OUTCOME_GUIDANCE, InvestigationReview
 from secval.models.read_coverage import read_coverage
 from secval.models.security_boundary import SecurityBoundary
 from secval.models.threat_model import ThreatModel
@@ -25,16 +29,26 @@ from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context, tool_reply_for_model
 from secval.services.audit_progress import audit_progress, request_budget_note
 
-
 logger = logging.getLogger(__name__)
 from secval.services.audit_stages import record_stage
 from secval.services.baseline_audit import run_baseline
 from secval.services.file_review_coverage import file_review_coverage
-from secval.services.finding_report import assemble_findings
+from secval.services.finding_report import assemble_findings, detail_digest
 from secval.services.independent_review import review_packet
 from secval.services.investigation_review import apply_review
+
+
+def _review_covers_detail(review, detail):
+    """Return true only when a completed review covers this exact detail version."""
+    return bool(review and not review.get("error") and detail is not None
+                and review.get("detail_sha256") == detail_digest(detail))
+from secval.services.agent_team import (
+    TEAM_PROMPT,
+    TeamModel,
+    TeamReviewTools,
+    TeamStopped,
+)
 from secval.services.report_coverage import report_coverage
-from secval.services.agent_team import TEAM_PROMPT, TeamModel, TeamReviewTools, TeamStopped
 
 SYSTEM = """你是只读安全审计调查员。调查用户目标，检查攻击者能力、信任边界、控制和反证。
 audit_progress(offset=0)查询后端保存的待审文件和待调查问题，每页20项，按next_offset翻页。
@@ -134,7 +148,8 @@ def _run_task(store, task_id, model, tools, team=None):
         {"role": "user", "content": task["objective"]},
     ]
     user_context = {"security_context": task.get("security_context", ""),
-                    "supplied_threat_model": task.get("supplied_threat_model", "")}
+                    "supplied_threat_model": task.get("supplied_threat_model", ""),
+                    "approved_config_paths": task.get("approved_config_paths", [])}
     if task.get("scope"):
         messages.append({"role": "user", "content": "后端确定的授权范围和能力限制："
                          + json.dumps(task["scope"], ensure_ascii=False)})
@@ -234,11 +249,12 @@ def _run_task(store, task_id, model, tools, team=None):
                     ) for item in investigations
                 )
                 remaining_calls = task["max_steps"] - store.get(task_id).get("model_calls", 0)
-                if (team and team.path_pipeline_enabled and not team.pending()):
-                    action = {"report": _canonical_report(investigations, finding_details)}
-                elif (team and can_finalize
-                        and (remaining_calls <= 3 or task.get("parent_report_submitted"))
-                        and not team.pending() and not team.undelivered()):
+                if (team and not team.pending()
+                        and (team.path_pipeline_enabled
+                             or (can_finalize
+                                 and (remaining_calls <= 3
+                                      or task.get("parent_report_submitted"))
+                                 and not team.undelivered()))):
                     action = {"report": _canonical_report(investigations, finding_details)}
                 else:
                     request_messages = messages + [{"role": "user", "content": request_budget_note(store.get(task_id))}]
@@ -373,8 +389,8 @@ def _run_task(store, task_id, model, tools, team=None):
                         review_tools = TeamReviewTools(team)
                         tool_events = []
 
-                        def buffer_tool(action, result):
-                            tool_events.append((action, result))
+                        def buffer_tool(event_action, event_result, target=tool_events):
+                            target.append((event_action, event_result))
 
                         review_model = TeamModel(team, team.model_factory(),
                                                  "review:" + candidate["id"] + f":{attempt + 1}")
@@ -409,9 +425,14 @@ def _run_task(store, task_id, model, tools, team=None):
                             # 失败记录不占位：移除后按常规流程重新复核。
                             validations = [row for row in validations
                                            if row is not existing]
-                        else:
-                            # 已有可核对复核记录：即使脚本再次请求，也不重复调用模型。
+                        elif _review_covers_detail(existing, detail):
+                            # 只有当前候选详情版本已经被复核才可占位。调查续跑可能
+                            # 更新详情；旧复核仍保留在 previous_independent_reviews 中
+                            # 供输入完全一致时复用，但不能阻止新版详情重新送审。
                             continue
+                        else:
+                            validations = [row for row in validations
+                                           if row is not existing]
                     if detail is None:
                         # 没有详情就无法验证详情指纹，保留缺口，不浪费调用做无法提升的复核。
                         validations.append({"investigation_id": candidate["id"], "outcome": "inconclusive",
@@ -469,14 +490,25 @@ def _run_task(store, task_id, model, tools, team=None):
                     validations.append(validation)
                     validations.sort(key=lambda item: investigation_order[item["investigation_id"]])
                     store.update(task_id, independent_reviews=validations)
+                if not threat_models:
+                    from secval.models.threat_model import derive_threat_model
+                    derived = derive_threat_model(boundaries, evidence)
+                    if derived is not None:
+                        threat_model = asdict(derived)
+                        threat_model.update(revision=1, status="derived_from_boundary_ledger")
+                        threat_models.append(threat_model)
+                        store.update(task_id, threat_model_history=threat_models)
                 report["coverage"] = report_coverage(boundaries, investigations, validations, store.get(task_id).get("baseline"))
                 report["independent_reviews"] = validations
                 # 复用或新增后都要写入持久层，导出报告从此处读取，而不是父任务残留值。
-                store.update(task_id, independent_reviews=validations)
+                # report_coverage 还会为精确路由匹配的基线问题补充来源关联，
+                # 因此 investigations 必须与覆盖结果原子持久化，避免导出台账与 deferred 矛盾。
+                store.update(task_id, independent_reviews=validations, investigations=investigations)
                 report["candidateDetails"] = finding_details
                 report["fileReviews"] = file_reviews
                 report["coverage"]["files"] = file_review_coverage(task.get("source_inventory"),
-                    task.get("scope", {}).get("source_snapshot_id"), file_reviews)
+                    task.get("scope", {}).get("source_snapshot_id"), file_reviews,
+                    task.get("approved_config_paths", []))
                 report["baseline"] = store.get(task_id).get("baseline")
                 report["findings"], detail_gaps = assemble_findings(finding_details, investigations, validations, evidence)
                 report["coverage"]["deferred"].extend(detail_gaps)
@@ -584,6 +616,18 @@ def _run_task(store, task_id, model, tools, team=None):
                     {"role": "user", "content": "工具数据：" + json.dumps(tool_reply_for_model(name, result), ensure_ascii=False)},
                 ]
             )
+            # [SECVAL-THREAT-MODEL-AS-INPUT] 威胁模型从"产出物"改为"输入"。
+            # 原设计里 threat_model 只在最终报告出现，后续轮次看不到它，
+            # 于是模型每轮都要重新推断"这个仓库里什么叫危险"。
+            # 现在每次记录或修订威胁模型后，把最新版本注入后续所有请求，
+            # 让模型在确定的仓库语境下判断危险操作，而不是依赖通用词表。
+            if name == "record_threat_model" and threat_models:
+                messages.append({
+                    "role": "user",
+                    "content": "当前生效的仓库威胁模型（后续分析的语境依据；"
+                               "如与源码证据冲突，以源码为准并记录差异）："
+                               + json.dumps(threat_models[-1], ensure_ascii=False),
+                })
             messages = compact_context(messages)
             store.update(task_id, checkpoint=checkpoint(messages, store.get(task_id)))
             if sum(len(m["content"]) for m in messages) > 100000:
@@ -618,7 +662,7 @@ def _run_task(store, task_id, model, tools, team=None):
             return
         store.update(task_id, status="failed", stop_reason="evidence_service_failed",
                      error="固定取证视图或搜索服务不可用；未切换实时数据，已有记录已保存")
-    except Exception:  # noqa: BLE001 -- 后台任务边界必须落盘失败，且不泄露供应端异常正文
+    except Exception:  # 后台任务边界必须落盘失败，且不泄露供应端异常正文
         logger.exception("audit task %s failed at internal execution boundary", task_id)
         if store.get(task_id)["status"] != "cancelled":
             store.update(

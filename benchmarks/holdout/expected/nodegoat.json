@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "repo_id": "nodegoat",
+  "commit": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+  "source_of_truth": "项目源码中的注释显式标注了漏洞与对应修复；被注释掉的 '// Fix for ...' 代码块证明漏洞仍然存在。",
+  "vulnerabilities": [
+    {
+      "id": "NG01",
+      "ruleId": "code_injection",
+      "cwe": ["CWE-95"],
+      "path": "app/routes/contributions.js",
+      "line": 31,
+      "evidence": "const preTax = eval(req.body.preTax) —— 直接对请求体求值，旁边注释 'Insecure use of eval() to parse inputs'",
+      "note": "三个 eval 调用（preTax/afterTax/roth）同属一个控制失效，按 Codex 规则应合并为一条 finding。"
+    },
+    {
+      "id": "NG02",
+      "ruleId": "open_redirect",
+      "cwe": ["CWE-601"],
+      "path": "app/routes/index.js",
+      "line": 71,
+      "evidence": "return res.redirect(req.query.url) —— 重定向目标完全来自查询参数"
+    },
+    {
+      "id": "NG03",
+      "ruleId": "object_level_authorization",
+      "cwe": ["CWE-639"],
+      "path": "app/routes/allocations.js",
+      "line": 13,
+      "evidence": "userId 取自 req.params 而非 req.session；正确的会话取法被注释掉"
+    },
+    {
+      "id": "NG04",
+      "ruleId": "nosql_injection",
+      "cwe": ["CWE-943"],
+      "path": "app/data/allocations-dao.js",
+      "line": 67,
+      "evidence": "threshold 未经转义直接进入查询；注释给出注入载荷示例与修复方案"
+    },
+    {
+      "id": "NG05",
+      "ruleId": "redos",
+      "cwe": ["CWE-1333"],
+      "path": "app/routes/profile.js",
+      "line": 53,
+      "evidence": "const regexPattern = /([0-9]+)+\\#/ —— 嵌套量词导致灾难性回溯；注释同时给出安全写法"
+    }
+  ],
+  "expected_clean_controls": [
+    {
+      "path": "app/routes/allocations.js",
+      "note": "该文件同时包含被注释的正确实现，模型不应把注释中的代码当作生效控制。"
+    }
+  ],
+  "scoring_note": "只统计独立复核为 supported 的正式发现。按 ruleId 与 path 匹配，不要求行号精确。"
+}

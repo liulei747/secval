@@ -32,6 +32,13 @@ def create_audit_service(connection, search_service=None, graph_store=None, joer
 
     store = AuditStore(settings.database_path)
     source_store = create_source_snapshot_store()
+    # 方案4-B：B腿（安全分析内核）默认不注入。开启 SECVAL_KERNEL_DUAL_RUN=true
+    # 才会在本进程内组装内核运行时；内核结论永远不会提升为 Finding，
+    # 关闭时报告中的 kernelRuntime 为 disabled（见 services/kernel_runtime.py 标记）。
+    kernel_runner = None
+    if settings.kernel_dual_run:
+        kernel_runner = create_kernel_runner(settings.database_path, source_store=source_store,
+                                             graph_store=graph_store)
     return AuditService(
         store,
         ThreadPoolExecutor(max_workers=1),
@@ -39,6 +46,5 @@ def create_audit_service(connection, search_service=None, graph_store=None, joer
         lambda repo, snapshot: EvidenceTools(connection, repo, snapshot, source_store,
                                              search_service=search_service, graph_store=graph_store,
                                              joern_client=joern_client),
-        kernel_runner=create_kernel_runner(settings.database_path, source_store=source_store,
-                                           graph_store=graph_store),
+        kernel_runner=kernel_runner,
     )

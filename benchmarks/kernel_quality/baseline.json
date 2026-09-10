@@ -1,10 +1,12 @@
 {
   "schema_version": 1,
   "frozen_at": "2026-09-09",
+  "revised_at": "2026-09-11",
+  "revision_reason": "comparison_sha256 与已提交文件不一致：基线在 f8c9cfb 提交前按工作区状态记录，随后报告文件在提交前又被编辑，导致哈希从未与实际提交内容匹配。本次按 HEAD 版本重算并记录，metrics 未改动。这不是为了放宽质量门而更新基线，指标仍为历史回归证据。",
   "subject": "legacy SinkSpring regression only",
   "source": {
     "comparison": "reports/sinkspring-comparison-87c69ad6.md",
-    "comparison_sha256": "0a952282507dd1f9e93153c3c23f9ac862856fcd71b7cb3147d2787929835a11",
+    "comparison_sha256": "f580a8121282fa65ea670f53357ceea1866f92ee7fcf5055129056751326292e",
     "prior_report": "reports/sinkspring-report-6e253f09.json",
     "prior_report_sha256": "4090fb221da7d5c7a2d2a699f7c25a2ee948c74b2f6ba1ab7f5d8862903435ef"
   },

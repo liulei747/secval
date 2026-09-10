@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-11",
+  "change": "删除硬编码 sink 词表；工具 14→3；threat_model 转为输入；B腿摘除",
+  "taskB": "69f51d7f450441568358e6bf120ce97c",
+  "note": "留出集尚未运行；SinkSpring 的私有 expected 文件不在本机，无法计算官方召回率。本文件只记录可核对的原始计数。",
+  "historical_old_code": {
+    "task": "42a078ae90074b0c8702be7b559c91a6",
+    "findings": 36,
+    "path_sketches": 113,
+    "deterministic_sketches": 47,
+    "candidate_details": 61,
+    "independent_reviews": 61,
+    "investigations": 61,
+    "recall_reported": 0.8857
+  },
+  "new_code": {
+    "task": "69f51d7f450441568358e6bf120ce97c",
+    "findings": 8,
+    "path_sketches": 42,
+    "deterministic_sketches": 0,
+    "candidate_details": 13,
+    "independent_reviews": 13,
+    "investigations": 13,
+    "model_calls": 56,
+    "tokens": 663399,
+    "kernel_runtime": "disabled"
+  }
+}

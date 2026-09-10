@@ -30,6 +30,8 @@ def main():
     started = datetime.fromisoformat(task["started_at"])
     finished = datetime.fromisoformat(task["finished_at"])
     requests = task.get("model_requests", [])
+    coverage = report.get("coverage", {})
+    reviews = report.get("independentReviews", [])
     metrics = {
         "task_id": args.task_id,
         "repository_id": task.get("repository_id"),
@@ -50,6 +52,14 @@ def main():
         "path_validations": len(task.get("path_validations", [])),
         "candidate_details": len(task.get("finding_detail_history", [])),
         "independent_reviews": len(task.get("independent_reviews", [])),
+        "review_outcomes": {
+            outcome: sum(row.get("outcome") == outcome for row in reviews)
+            for outcome in ("supported", "refuted", "inconclusive")
+        },
+        "deferred_checks": len(coverage.get("deferred", [])),
+        "unresolved_checks": len(coverage.get("unresolved", [])),
+        "remaining_files": len((coverage.get("files") or {}).get("remaining", [])),
+        "excluded_files": len((coverage.get("files") or {}).get("excluded", [])),
         "formal_findings": sum(
             row.get("status") == "static_supported_needs_review"
             for row in report.get("findings", [])

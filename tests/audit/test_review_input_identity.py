@@ -1,17 +1,20 @@
 """复核输入身份必须随前提、边界变化，且不受字典插入顺序影响。"""
 
-from unittest.mock import MagicMock
 from copy import deepcopy
+from unittest.mock import MagicMock
 
-from secval.services.independent_review import review_packet
-from secval.services.independent_review import review_evidence_matches
-from secval.services.independent_review import _prefetch_candidate_dependencies
-from secval.models.investigation_review import InvestigationReview
-from secval.models.audit_contracts import ModelOutputError
 import pytest
-from copy import deepcopy as _deepcopy
-from tests.audit.test_service_flow import candidate_detail
+
+from secval.models.audit_contracts import ModelOutputError
+from secval.models.investigation_review import InvestigationReview
+from secval.services.independent_review import (
+    _prefetch_candidate_context,
+    _prefetch_candidate_dependencies,
+    review_evidence_matches,
+    review_packet,
+)
 from tests.audit.test_agent_team import demo_row
+from tests.audit.test_service_flow import candidate_detail
 
 
 def test_review_input_identity_tracks_context_and_boundary():
@@ -82,6 +85,74 @@ def test_candidate_review_prefetches_imported_repository_types():
     assert _prefetch_candidate_dependencies(tools, selected) == 1
     assert "read-2" in selected
     assert tools.call.call_count == 2
+
+
+def test_runtime_sensitive_review_prefetches_manifest_and_approved_config():
+    def row(path, evidence_id):
+        value = demo_row()
+        value.update(relative_path=path, chunk_id=evidence_id, evidence_id=evidence_id,
+                     content="context", content_sha256=evidence_id)
+        return value
+
+    tools = MagicMock()
+    tools.call.side_effect = [
+        {"rows": [row("pom.xml", "pom")]},
+        *[ValueError("not present") for _ in range(5)],
+        {"rows": [row("src/main/resources/application.yml", "config")]},
+    ]
+    selected = {"read-1": row("PreferenceService.java", "read-1")}
+    detail = {"ruleId": "unsafe-deserialization", "summary": "依赖JDK与classpath gadget"}
+    reads = _prefetch_candidate_context(
+        tools, selected, detail,
+        {"approved_config_paths": ["src/main/resources/application.yml"]},
+    )
+    assert reads == 2
+    assert {row["relative_path"] for row in selected.values()} == {
+        "PreferenceService.java", "pom.xml", "src/main/resources/application.yml",
+    }
+
+
+def test_plain_dataflow_review_does_not_prefetch_global_context():
+    tools = MagicMock()
+    assert _prefetch_candidate_context(
+        tools, {"read-1": demo_row()}, {"ruleId": "sql-injection"},
+        {"approved_config_paths": ["application.yml"]},
+    ) == 0
+    tools.call.assert_not_called()
+
+
+def test_approved_paths_alone_do_not_invalidate_review_identity():
+    model = MagicMock()
+    model.next_action.return_value = {
+        "investigation_id": "i", "outcome": "inconclusive", "assessment": "证据不足",
+        "counterevidence": "无", "limitations": ["静态"], "evidence_ids": ["read-1"],
+    }
+    evidence = {"read-1": demo_row()}
+    investigation = {"id": "i", "question": "q", "evidence_ids": ["read-1"]}
+    boundary = {"entry": "api", "asset": "data", "evidence_ids": ["read-1"]}
+    plain = review_packet(model, investigation, boundary, evidence,
+                          user_context={"security_context": "remote"})
+    approved = review_packet(
+        model, investigation, boundary, evidence,
+        user_context={"security_context": "remote", "approved_config_paths": ["application.yml"]},
+    )
+    assert approved["input_sha256"] == plain["input_sha256"]
+
+
+def test_baseline_provenance_links_do_not_invalidate_review_identity():
+    model = MagicMock()
+    model.next_action.return_value = {
+        "investigation_id": "i", "outcome": "inconclusive", "assessment": "证据不足",
+        "counterevidence": "无", "limitations": ["静态"], "evidence_ids": ["read-1"],
+    }
+    evidence = {"read-1": demo_row()}
+    boundary = {"entry": "api", "asset": "data", "evidence_ids": ["read-1"]}
+    base = {"id": "i", "question": "q", "evidence_ids": ["read-1"],
+            "baseline_question_ids": []}
+    first = review_packet(model, base, boundary, evidence)
+    linked = review_packet(model, {**base, "baseline_question_ids": ["baseline-1"]},
+                           boundary, evidence)
+    assert linked["input_sha256"] == first["input_sha256"]
 
 
 def test_review_contract_rejects_process_placeholder():

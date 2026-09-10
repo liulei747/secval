@@ -51,3 +51,43 @@ class ThreatModel:
             raise ModelOutputError("模型事实只能引用不重复的已读证据")
         if raw["origin"] == "code" and not refs:
             raise ModelOutputError("代码事实必须有已读证据")
+
+
+def derive_threat_model(boundaries, evidence):
+    """Derive a conservative structured model from the validated boundary ledger.
+
+    This does not invent deployment facts. Every concrete fact is copied from a
+    recorded boundary and retains that boundary's evidence references.
+    """
+
+    def facts(field):
+        rows = []
+        seen = set()
+        for boundary in boundaries:
+            value = str(boundary.get(field, "")).strip()
+            refs = [ref for ref in boundary.get("evidence_ids", []) if ref in evidence][:20]
+            if not value or not refs or value in seen:
+                continue
+            seen.add(value)
+            rows.append({"text": value, "origin": "code", "evidence_ids": refs})
+            if len(rows) == 30:
+                break
+        return rows
+
+    boundary_ids = [row["id"] for row in boundaries if row.get("id")][:30]
+    assets = facts("asset")
+    attackers = facts("attacker_control")
+    objectives = facts("expected_control")
+    if not boundary_ids or not assets or not attackers or not objectives:
+        return None
+    model = {
+        "summary": {"text": "由已登记信任边界及其源码证据确定性派生；未登记的部署边界仍未知。",
+                    "origin": "unknown", "evidence_ids": []},
+        "assets": assets,
+        "trustBoundaries": boundary_ids,
+        "attackerCapabilities": attackers,
+        "securityObjectives": objectives,
+        "assumptions": [{"text": "未登记入口、外部基础设施与运行期控制不在该派生模型证明范围内。",
+                         "origin": "unknown", "evidence_ids": []}],
+    }
+    return ThreatModel.parse(model, boundaries, evidence)

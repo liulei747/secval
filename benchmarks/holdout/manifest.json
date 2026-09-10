@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "purpose": "留出集（hold-out）：规则只在 SinkSpring 上调整，本集只用于验收泛化能力。",
+  "policy": [
+    "本集仅在改造完成后运行一次，用于得出可对外声明的召回率。",
+    "不得根据本集结果回头修改规则；若确需修改，必须重新冻结并披露。",
+    "本集内容不得进入模型上下文之外的任何提示词或代码常量表。"
+  ],
+  "repos": [
+    {
+      "id": "petclinic",
+      "path": "benchmarks/holdout/repos/petclinic",
+      "language": "java",
+      "framework": "spring",
+      "commit": "818c4136ea971c21674525f9053de0d9c7ad8cfe",
+      "committed_at": "2026-08-26T11:57:54+01:00",
+      "source": "https://github.com/spring-projects/spring-petclinic.git",
+      "expected": "benchmarks/holdout/expected/petclinic.json",
+      "note": "官方示例应用，安全基线较高。用于测试误报控制：不应产生大量虚假高危发现。"
+    },
+    {
+      "id": "nodegoat",
+      "path": "benchmarks/holdout/repos/nodegoat",
+      "language": "javascript",
+      "framework": "express",
+      "commit": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "committed_at": "2023-06-21T10:23:23+03:00",
+      "source": "https://github.com/OWASP/NodeGoat.git",
+      "expected": "benchmarks/holdout/expected/nodegoat.json",
+      "note": "OWASP 故意植入漏洞的教学项目，漏洞类型有公开文档。用于测试召回率。"
+    },
+    {
+      "id": "flask-src",
+      "path": "benchmarks/holdout/repos/flask-src",
+      "language": "python",
+      "framework": "flask",
+      "commit": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+      "committed_at": "2026-09-08T09:40:41-07:00",
+      "source": "https://github.com/pallets/flask.git",
+      "expected": "benchmarks/holdout/expected/flask.json",
+      "note": "成熟框架源码，框架自身职责包含安全边界。用于测试对'框架即边界'的理解，不应把框架内部的正常转发误报为漏洞。"
+    }
+  ]
+}

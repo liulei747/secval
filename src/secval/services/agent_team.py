@@ -9,6 +9,7 @@ from dataclasses import asdict
 from threading import Event, Lock
 from time import monotonic
 
+from secval.code_processing.repository_scan import is_supported_source
 from secval.models.agent_work import parse_assignment
 from secval.models.audit import EvidenceServiceError
 from secval.models.audit_contracts import (
@@ -16,8 +17,8 @@ from secval.models.audit_contracts import (
     ModelOutputError,
     ModelRequestError,
 )
-from secval.models.audit_scope import in_scope
-from secval.models.audit_tools import iter_evidence_rows
+from secval.models.audit_scope import in_scope, is_executable_descriptor
+from secval.models.audit_tools import AUDIT_MODEL_TOOLS, iter_evidence_rows
 from secval.models.candidate_provenance import append_candidate_origin, candidate_origin
 from secval.services.audit_checkpoint import checkpoint
 from secval.services.audit_context import compact_context
@@ -32,162 +33,11 @@ def bounded_path_groups(paths, size=3):
     return [unique[offset:offset + size] for offset in range(0, len(unique), size)]
 
 
-def packet_security_signals(evidence):
-    """List deterministic review anchors without asserting vulnerability."""
-    anchors = (
-        "${", "executeQuery", "Runtime.getRuntime().exec", "ProcessBuilder",
-        "Files.readString", "Files.writeString", "HttpClient.send", "getResponseCode",
-        "ObjectInputStream", "XMLDecoder", "DocumentBuilder.parse", "parseExpression",
-        "Template.process", "InitialContext.lookup", "JWT.decode", "ResponseEntity.location",
-        "MediaType.TEXT_HTML", "changeRole", "permitAll", "include-stacktrace",
-        "h2.console.enabled", "management.endpoints.web.exposure", "password", "secret",
-    )
-    found = []
-    for row in evidence.values():
-        content = row.get("content", "")
-        for anchor in anchors:
-            if anchor in content and anchor not in found:
-                found.append(anchor)
-    return found[:20]
-
-
-_SINK_RULES = (
-    ("${", "injection", "sql_injection", "参数化SQL或严格列名白名单"),
-    ("executeQuery", "injection", "sql_injection", "参数化SQL"),
-    ("Runtime.getRuntime().exec", "command_execution", "command_injection", "参数数组和命令白名单"),
-    ("ProcessBuilder", "command_execution", "command_injection", "固定可执行文件和参数白名单"),
-    ("Files.readString", "file_access", "path_traversal", "规范化后目录边界检查"),
-    ("Files.writeString", "file_access", "arbitrary_file_write", "规范化后目录边界检查"),
-    ("httpClient.send", "network", "ssrf", "目标协议和地址白名单"),
-    ("getResponseCode", "network", "ssrf", "目标协议和地址白名单"),
-    ("ObjectInputStream", "deserialization", "unsafe_deserialization", "安全数据格式和类型白名单"),
-    ("XMLDecoder", "deserialization", "unsafe_deserialization", "禁用对象图反序列化"),
-    (".parse(new InputSource", "xml", "xxe", "禁用外部实体和DOCTYPE"),
-    ("parseExpression", "injection", "expression_injection", "固定表达式或受限求值上下文"),
-    ("template.process", "injection", "template_injection", "固定模板和数据模型隔离"),
-    ("InitialContext().lookup", "injection", "jndi_injection", "固定JNDI名称白名单"),
-    ("JWT.decode", "authentication", "jwt_verification_bypass", "验签后再信任声明"),
-    (".location(", "redirect", "open_redirect", "站内目标白名单"),
-    ("MediaType.TEXT_HTML", "response", "xss", "上下文相关HTML编码"),
-    ("changeRole", "authorization", "function_level_authorization", "管理员权限和目标范围校验"),
-    ("management.endpoints.web.exposure", "configuration", "security_misconfiguration", "最小化管理端点暴露"),
-    ("h2.console.enabled", "configuration", "security_misconfiguration", "生产环境关闭数据库控制台"),
-    ("include-stacktrace", "configuration", "security_misconfiguration", "生产响应禁用堆栈信息"),
-    ("password:", "configuration", "hardcoded_secret", "外部秘密存储"),
-    ("client-secret", "configuration", "hardcoded_secret", "外部秘密存储"),
-)
-
-
-def deterministic_sink_sketches(packets):
-    """Create bootstrap hints for dangerous syntax; this does not confirm a vulnerability."""
-    sketches, seen = [], set()
-    for packet in packets:
-        for evidence_id, row in packet.get("evidence", {}).items():
-            content, path = row.get("content", ""), row.get("relative_path", "")
-            for anchor, surface, candidate_type, control in _SINK_RULES:
-                occurrences = [match.start() for match in re.finditer(re.escape(anchor), content)]
-                for position in occurrences:
-                # ${} is a SQL sink only in mapper descriptors, not ordinary config placeholders.
-                    if anchor == "${" and not (path.endswith(".xml") and "mapper" in path.lower()):
-                        continue
-                    before, after = content[:position], content[position:]
-                    if path.endswith(".xml"):
-                        matches = re.findall(r'<(?:select|insert|update|delete)\s+id="([^"]+)"', before)
-                        symbol = matches[-1] if matches else anchor
-                    else:
-                        methods = re.findall(
-                            r"(?:public|protected|private)\s+(?:[\w<>?,.\[\]]+\s+)+([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*(?:throws[^{}]+)?\{",
-                            before,
-                        )
-                        symbol = methods[-1] if methods else anchor
-                        if anchor == "MediaType.TEXT_HTML":
-                            following = re.search(
-                                r"(?:public|protected|private)\s+(?:[\w<>?,.\[\]]+\s+)+([A-Za-z_$][\w$]*)\s*\(",
-                                after,
-                            )
-                            if following:
-                                symbol = following.group(1)
-                    identity = (path, symbol, anchor, candidate_type)
-                    if identity in seen:
-                        continue
-                    seen.add(identity)
-                    need = ({"kind": "route_guard", "target": path,
-                         "reason": "确认配置暴露条件和环境覆盖", "required_for": "reachability"}
-                        if surface == "configuration" else
-                        {"kind": "callers", "target": symbol,
-                         "reason": "反向连接危险操作到所有外部入口", "required_for": "source_to_sink"})
-                    digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
-                    sketches.append(append_candidate_origin({
-                    "id": "system:path-" + digest, "source_id": "legacy_sink_bootstrap",
-                    "status": "queued_for_validation", "surface": surface,
-                    "candidate_type": candidate_type, "entry": "待由调用者闭包解析的入口",
-                    "source": "外部可控输入候选", "hops": [symbol],
-                    "sink": f"{path} 中的 {anchor}", "control": control,
-                    "hypothesis": f"外部输入可能到达 {anchor} 且缺少{control}",
-                    "needs": [need], "evidence_ids": [evidence_id],
-                    "deterministic_anchor": anchor,
-                    }, candidate_origin("heuristic", "legacy_sink_bootstrap",
-                                        capability="bootstrap_hint")))
-            # Resource identifiers at HTTP boundaries are authorization
-            # candidates even though they do not end in a traditional sink.
-            if path.endswith("Controller.java"):
-                method_pattern = re.compile(
-                    r"@(?:Get|Post|Put|Patch|Delete)Mapping[^\n]*\n\s*"
-                    r"public\s+[^{;]+?\s+([A-Za-z_$][\w$]*)\s*\((.*?)\)\s*(?:throws[^{}]+)?\{",
-                    re.DOTALL,
-                )
-                for method, parameters in method_pattern.findall(content):
-                    identifiers = re.findall(
-                        r"@(?:PathVariable|RequestParam)(?:\([^)]*\))?\s+(?:String|Long|Integer)\s+([A-Za-z_$][\w$]*Id)\b",
-                        parameters,
-                    )
-                    if not identifiers:
-                        continue
-                    anchor = "resource-id:" + ",".join(identifiers)
-                    identity = (path, method, anchor, "object_level_authorization")
-                    if identity in seen:
-                        continue
-                    seen.add(identity)
-                    digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
-                    sketches.append(append_candidate_origin({
-                        "id": "system:path-" + digest, "source_id": "legacy_sink_bootstrap",
-                        "status": "queued_for_validation", "surface": "authorization",
-                        "candidate_type": "object_level_authorization", "entry": method,
-                        "source": ", ".join(identifiers), "hops": [method],
-                        "sink": "按请求资源ID读取或修改对象", "control": "对象归属或租户范围校验",
-                        "hypothesis": "请求资源ID可能在没有对象级授权时访问其他主体的数据",
-                        "needs": [{"kind": "callees", "target": method,
-                                   "reason": "确认资源查询及所有权条件", "required_for": "authorization"}],
-                        "evidence_ids": [evidence_id], "deterministic_anchor": anchor,
-                    }, candidate_origin("heuristic", "legacy_sink_bootstrap",
-                                        capability="bootstrap_hint")))
-            if path.endswith((".yml", ".yaml")):
-                yaml_rules = (
-                    (r"(?m)^\s*include:\s*['\"]?\*", "management-exposure-wildcard",
-                     "最小化管理端点暴露"),
-                    (r"(?ms)^\s*h2:\s*\n\s+console:\s*\n\s+enabled:\s*true", "h2-console-enabled",
-                     "生产环境关闭数据库控制台"),
-                )
-                for pattern, anchor, control in yaml_rules:
-                    if not re.search(pattern, content):
-                        continue
-                    identity = (path, anchor, "security_misconfiguration")
-                    if identity in seen:
-                        continue
-                    seen.add(identity)
-                    digest = hashlib.sha256("|".join(identity).encode()).hexdigest()[:16]
-                    sketches.append(append_candidate_origin({
-                        "id": "system:path-" + digest, "source_id": "legacy_sink_bootstrap",
-                        "status": "queued_for_validation", "surface": "configuration",
-                        "candidate_type": "security_misconfiguration", "entry": path,
-                        "source": "应用配置", "hops": [anchor], "sink": anchor,
-                        "control": control, "hypothesis": f"配置 {anchor} 可能扩大生产攻击面",
-                        "needs": [{"kind": "route_guard", "target": path,
-                                   "reason": "确认环境覆盖和暴露条件", "required_for": "reachability"}],
-                        "evidence_ids": [evidence_id], "deterministic_anchor": anchor,
-                    }, candidate_origin("heuristic", "legacy_sink_bootstrap",
-                                        capability="bootstrap_hint")))
-    return sketches
+# [SECVAL-OVERFIT-1] 已删除硬编码 sink 词表（原 _SINK_RULES / packet_security_signals /
+# deterministic_sink_sketches）。原因：该表按单一 benchmark 的答案定制，
+# 贡献 42% 候选但命中率仅为模型的一半，是过拟合的主要来源。
+# 替代方案：由模型在 Phase 0 依据仓库实际架构生成威胁模型，并注入后续每个请求。
+# 详见 docs/leg-b-status.md 与 benchmarks/holdout/README.md。
 
 
 class TeamStopped(RuntimeError):
@@ -332,61 +182,18 @@ class AgentTeam:
                         self.seed_packets.append({"id": f"entry-{packet_number}",
                                                   "evidence": packet,
                                                   "paths": packet_paths,
-                                                  "kind": "entry",
-                                                  "signals": packet_security_signals(packet)})
-                # Entrypoint annotations do not reveal sinks hidden in services,
-                # mappers, templates or configuration. A deterministic local
-                # catalogue locates those files before any model call. Results
-                # are hypotheses only and still pass through normal validation.
-                sink_terms = (
-                    "executeQuery", "Runtime.getRuntime().exec", "ProcessBuilder",
-                    "Files.readString", "Files.writeString", "httpClient.send",
-                    "getResponseCode", "ObjectInputStream", "XMLDecoder",
-                    ".parse(new InputSource", "parseExpression", "template.process",
-                    "InitialContext().lookup", "JWT.decode", ".location(",
-                    "${", "password", "secret", "permitAll", "allowedOrigins",
-                )
-                sink_paths = []
-                for term in sink_terms:
-                    search_offset = 0
-                    while True:
-                        located = self.read_tool("search_source", {"text": term,
-                                                                   "offset": search_offset})
-                        self.seed_events.append({"tool": "search_source",
-                                                 "arguments": {"text": term,
-                                                               "offset": search_offset},
-                                                 "result": located})
-                        for row in located.get("rows", []):
-                            path = row.get("path") or row.get("relative_path")
-                            if path and path not in paths and path not in sink_paths:
-                                sink_paths.append(path)
-                        next_offset = located.get("next_offset")
-                        if next_offset is None:
-                            break
-                        search_offset = next_offset
-                self.store.update(self.task_id, sink_inventory=[{"path": path, "status": "queued"}
-                                                                 for path in sink_paths])
-                for offset in range(0, len(sink_paths), 2):
-                    packet, packet_paths = {}, []
-                    for path in sink_paths[offset:offset + 2]:
-                        result = self.read_tool("read_file", {"path": path})
-                        incoming = {}
-                        self.collect_evidence("read_file", result, incoming)
-                        packet.update(incoming)
-                        packet_paths.append(path)
-                    if packet:
-                        self.seed_packets.append({"id": f"sink-{offset // 2 + 1}",
-                                                  "evidence": packet, "paths": packet_paths,
-                                                  "kind": "sink",
-                                                  "signals": packet_security_signals(packet)})
+                                                  "kind": "entry"})
+                # [SECVAL-OVERFIT-2] 已删除按固定 sink_terms 词表做全仓搜索的逻辑。
+                # 原实现用 19 个硬编码字面量定位"危险文件"，其覆盖面等于作者已知的
+                # 漏洞类型。改为只预取入口文件与用户批准的配置；敏感操作由模型在
+                # 阅读源码时自行识别，不预设清单。
                 for number, path in enumerate(self.task.get("approved_config_paths", [])[:4], 1):
                     result = self.read_tool("read_file", {"path": path})
                     packet = {}
                     self.collect_evidence("read_file", result, packet)
                     if packet:
                         self.seed_packets.append({"id": f"config-{number}", "evidence": packet,
-                                                  "paths": [path], "kind": "config",
-                                                  "signals": packet_security_signals(packet)})
+                                                  "paths": [path], "kind": "config"})
             total = 0
             for row in selected_rows:
                 result = self.read_tool("read_file", {"path": row["path"]})
@@ -406,23 +213,19 @@ class AgentTeam:
             if small_complete and self.seed_evidence:
                 self.seed_packets = [{"id": "complete", "evidence": deepcopy(self.seed_evidence),
                                       "paths": [row.get("relative_path") for row in self.seed_evidence.values()],
-                                      "kind": "complete",
-                                      "signals": packet_security_signals(self.seed_evidence)}]
+                                      "kind": "complete"}]
             anchored_evidence = {
                 evidence_id: row
                 for packet in self.seed_packets
                 for evidence_id, row in packet.get("evidence", {}).items()
             }
-            deterministic = deterministic_sink_sketches(self.seed_packets)
+            # [SECVAL-OVERFIT-3] 已删除 deterministic_sink_sketches 注入。
+            # 候选不再由本地词表预先生成，全部来自模型对固定快照的阅读。
             current = self.store.get(self.task_id)
-            existing_sketches = list(current.get("path_sketches", []))
-            known_ids = {row.get("id") for row in existing_sketches}
-            existing_sketches.extend(row for row in deterministic if row["id"] not in known_ids)
             self.store.update(self.task_id, discovery_packets=[
                 {"id": row["id"], "kind": row.get("kind", "entry"),
                  "paths": row["paths"], "status": "queued"} for row in self.seed_packets
-            ], evidence={**current.get("evidence", {}), **anchored_evidence},
-                path_sketches=existing_sketches)
+            ], evidence={**current.get("evidence", {}), **anchored_evidence})
             record_stage(
                 self.store, self.task_id, "entry_prefetch", "completed", name="入口扫描与证据预取",
                 completed_units=len(self.seed_evidence), total_units=len(selected_rows),
@@ -475,6 +278,13 @@ class AgentTeam:
         self.prepare_seed()
         workers = self.store.get(self.task_id).get("agent_tasks", [])
         if workers:
+            if (self.task.get("independent_baseline", True)
+                    and not any(worker.get("role") == "baseline" for worker in workers)):
+                self.submit("baseline", {
+                    "title": "独立基线审计",
+                    "question": self.task["objective"],
+                    "evidence_ids": [],
+                })
             for worker in workers:
                 if worker["status"] == "completed" and self.task.get("parent_task_id"):
                     self.update_worker(worker["id"], calls=0, reused_result=True,
@@ -508,11 +318,13 @@ class AgentTeam:
                                        validation_resume=None)
                     self.futures[worker["id"]] = self.pool.submit(run_worker, self, worker["id"])
             self.schedule_path_validations()
+            self.schedule_file_reviews()
             return
-        # A large-repository prefill run gets its independent judgement from the
-        # per-packet validator. Starting the legacy baseline here recreates the
-        # very 30K+ prompt loop this pipeline is intended to replace.
-        if self.task.get("independent_baseline", True) and not self.path_pipeline_enabled:
+        # Per-packet validation is intentionally scoped to paths discovered by
+        # the probe; it cannot replace an independent baseline whose purpose is
+        # to identify omissions in discovery.  Skipping this worker made every
+        # large path-pipeline report partial and hid systematic missed classes.
+        if self.task.get("independent_baseline", True):
             self.submit("baseline", {"title": "独立基线审计", "question": self.task["objective"], "evidence_ids": []})
         # A complete bounded source packet already gives the parent enough data
         # to map a tiny repository. A third simultaneous model request adds cost
@@ -525,15 +337,76 @@ class AgentTeam:
                 for packet in packets:
                     self.submit("architecture", {"title": "入口路径预筛 · " + packet["id"], "question":
                         "逐一检查本包全部入口，覆盖认证、授权、文件读写、命令执行、反序列化、注入、出站请求、数据暴露和配置安全面；输出所有可信Source→Hop→Sink路径及明确补证缺口。",
-                        "evidence_ids": [],
-                        "required_signals": packet.get("signals", [])}, mode=mode, evidence=packet["evidence"])
-                # Deterministic sink candidates are durable even if a discovery
-                # model omits the same issue in this run.
-                self.schedule_path_validations()
+                        "evidence_ids": []}, mode=mode, evidence=packet["evidence"])
+                # [SECVAL-OVERFIT-4] 此处原先立即调用 schedule_path_validations()
+                # 把本地词表生成的 deterministic 候选送验证。词表删除后没有预生成
+                # 候选，验证包只由模型的 path_sketches 经 persist_path_sketches 触发，
+                # 因此不再无条件调度（原来会产生空的验证调度）。
             else:
                 self.submit("architecture", {"title": "独立架构分析", "question":
                     "确认实际入口、资产、信任边界和控制，追查资源的实际使用者；仅做架构分析，不冒充安全审阅。",
                     "evidence_ids": []}, mode=None)
+
+    def schedule_file_reviews(self):
+        """On continuation, review complete auditable files in bounded packets."""
+        task = self.store.get(self.task_id)
+        inventory = task.get("source_inventory") or []
+        if (not task.get("parent_report_submitted") or len(inventory) <= 12
+                or any(row.get("role") == "file_review" and row.get("status") != "completed"
+                       for row in task.get("agent_tasks", []))):
+            return
+        reviewed = {row.get("path") for row in task.get("file_reviews", [])
+                    if row.get("status") == "reviewed_static"}
+        approved = set(task.get("approved_config_paths", []))
+        captured_paths = {row.get("path") for row in inventory if row.get("status") == "captured"}
+        packets, current, size = [], {}, 0
+        for item in inventory:
+            path = item.get("path", "")
+            if (item.get("status") != "captured" or path in reviewed
+                    or not (is_supported_source(path) or is_executable_descriptor(path)
+                            or path in approved)):
+                continue
+            try:
+                result = self.read_tool("read_file", {"path": path})
+                incoming = {}
+                self.collect_evidence("read_file", result, incoming)
+            except (ValueError, EvidenceServiceError):
+                continue
+            # A file review may remain partial only because a directly imported
+            # project type or same-name descriptor was outside its packet. Add
+            # those bounded companions as context on the next continuation.
+            content = "\n".join(row.get("content", "") for row in incoming.values())
+            companion_names = re.findall(
+                r"(?m)^\s*import\s+(?:[A-Za-z_$][\w$]*\.)+([A-Z][\w$]*);", content)
+            # [SECVAL-OVERFIT-5] 原实现只对 *Mapper.java 查找同名 .xml（MyBatis 约定），
+            # 把"哪个接口有同名描述符"硬编码成命名后缀。改为对任意 Java 类型都尝试
+            # 同名描述符，由文件是否实际存在决定是否有伙伴，不再依赖类名约定。
+            if path.endswith(".java"):
+                companion_names.append(path.rsplit("/", 1)[-1].removesuffix(".java") + ".xml")
+            companions = [candidate for candidate in captured_paths
+                          if any(candidate.endswith("/" + name + ("" if "." in name else ".java"))
+                                 for name in companion_names)]
+            for companion in companions[:4]:
+                try:
+                    companion_result = self.read_tool("read_file", {"path": companion})
+                    self.collect_evidence("read_file", companion_result, incoming)
+                except (ValueError, EvidenceServiceError):
+                    continue
+            incoming_size = sum(len(row.get("content", "")) for row in incoming.values())
+            if current and (len(current) + len(incoming) > 8
+                            or size + incoming_size > 24000):
+                packets.append(current)
+                current, size = {}, 0
+            current.update(incoming)
+            size += incoming_size
+        if current:
+            packets.append(current)
+        for number, review_evidence in enumerate(packets[:4], 1):
+            self.submit("file_review", {
+                "title": f"整文件安全审阅 {number}/{min(len(packets), 4)}",
+                "question": "逐一安全审阅包内每个完整文件并登记 reviewed_files；不发现漏洞也要记录所检查控制。",
+                "evidence_ids": list(review_evidence),
+            }, mode="prefill_file_review", evidence=review_evidence)
 
     @property
     def path_pipeline_enabled(self):
@@ -551,10 +424,18 @@ class AgentTeam:
             if task["max_steps"] - task.get("model_calls", 0) < 2:
                 return False
             workers = task.get("agent_tasks", [])
-            worker = next((row for row in workers
-                           if row["status"] == "stopped"
-                           and row.get("stop_reason") == "reserved_for_main"
-                           and not row.get("validation_resume")), None)
+            resumable = [row for row in workers
+                         if ((row["status"] == "stopped"
+                              and row.get("stop_reason") in {"reserved_for_main", "worker_step_limit"})
+                             or (row["status"] == "failed"
+                                 and row.get("stop_reason") == "model_output_truncated"))
+                         and not row.get("validation_resume")]
+            # The independent baseline is the only worker whose missing result
+            # directly prevents completion classification.  Give it the first
+            # bounded finalization slot; discovery workers still remain eligible
+            # afterwards when budget permits.
+            worker = next((row for row in resumable if row.get("role") == "baseline"),
+                          resumable[0] if resumable else None)
             if worker is None:
                 return False
             worker["status"] = "queued"
@@ -597,16 +478,19 @@ class AgentTeam:
         configure_tools = getattr(model, "set_available_read_tools", None)
         if configure_tools is not None:
             scoped = set(self.task.get("scope", {}).get("tools", []))
-            focused = {
-                "batch_evidence", "list_files", "read_file", "read_chunk", "search_source",
-                "hybrid_search", "find_entry_points", "find_code_callers",
-                "find_code_callees", "find_data_paths",
-            }
+            # [SECVAL-OVERFIT-6] 模型只看到 3 个核心工具（search_source/read_file/
+            # list_files），与 AUDIT_MODEL_TOOLS 一致。图与路径工具仍由验证管线
+            # 内部使用，但不再作为模型的主要信息来源——它们返回的是线索而非证据，
+            # 模型仍须回读源码，不如直接给整文件以保留完整控制流。
+            focused = set(AUDIT_MODEL_TOOLS)
             if self.seed_complete:
-                focused -= {"list_files", "read_file", "read_chunk"}
+                # 源码已整包提供，无需再让模型自己枚举或分块读取。
+                focused -= {"list_files", "read_file"}
             elif self.seed_evidence:
-                focused -= {"list_files", "find_entry_points"}
-            configure_tools([] if is_review or is_path_validation or is_path_builder or worker_mode == "prefill_path_probe" else scoped & focused)
+                focused -= {"list_files"}
+            configure_tools([] if is_review or is_path_validation or is_path_builder
+                            or worker_mode in {"prefill_path_probe", "prefill_file_review"}
+                            else scoped & focused)
         configure_actions = getattr(model, "set_available_action_tools", None)
         if configure_actions is not None:
             if agent_id == "main":
@@ -1103,8 +987,14 @@ class AgentTeam:
                 baseline["questions"].append({**question, "id": question_id, "worker_id": worker["id"]})
         for review in result["reviewed_files"]:
             parsed = parse_file_review(review, worker_evidence)
-            if not any(row["file_id"] == parsed["file_id"] for row in file_reviews):
+            existing = next((row for row in file_reviews
+                             if row["file_id"] == parsed["file_id"]), None)
+            if existing is None:
                 file_reviews.append({**parsed, "agent_id": worker["id"]})
+            elif (existing.get("status") != "reviewed_static"
+                  and parsed.get("status") == "reviewed_static"):
+                existing.clear()
+                existing.update({**parsed, "agent_id": worker["id"]})
         for unknown in result["unknowns"]:
             if unknown not in baseline["unknowns"]:
                 baseline["unknowns"].append(unknown)

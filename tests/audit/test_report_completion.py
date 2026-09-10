@@ -1,6 +1,6 @@
 """报告生成不等于检查项收口，空结果也不表示安全。"""
 
-from secval.services.report_coverage import report_completion
+from secval.services.report_coverage import report_completion, report_coverage
 
 
 def recorded_task():
@@ -84,3 +84,41 @@ def test_terminal_path_ledger_does_not_add_queue_reasons():
         "files": {"available": True, "remaining": [], "excluded": []}})
     assert not any("发现包" in reason or "路径验证包" in reason or "路径草稿" in reason
                    for reason in result["pendingReasons"])
+
+
+def test_baseline_question_is_linked_only_by_exact_normalized_route():
+    boundaries = [{"id": "b1", "entry": "GET /api/accounts/{accountId}"},
+                  {"id": "b2", "entry": "GET /api/accounts/settings"}]
+    investigations = [{"id": "i1", "boundary_id": "b1", "question": "check ownership",
+                       "status": "refuted", "baseline_question_ids": []},
+                      {"id": "i2", "boundary_id": "b2", "question": "check settings",
+                       "status": "refuted", "baseline_question_ids": []}]
+    baseline = {"questions": [{"id": "q1", "question": "GET /api/accounts/{id} 是否越权"},
+                              {"id": "q2", "question": "整体访问控制是否缺失",
+                               "outcome": "inconclusive", "evidence_ids": ["read-1"]}]}
+    coverage = report_coverage(boundaries, investigations, [], baseline)
+    assert investigations[0]["baseline_question_ids"] == ["q1"]
+    assert investigations[1]["baseline_question_ids"] == []
+    assert coverage["deferred"] == []
+    assert coverage["unresolved"] == [{"id": "q2", "reason": "基线问题未关联主调查"}]
+
+
+def test_completed_inconclusive_review_is_unresolved_but_not_pending():
+    coverage = report_coverage(
+        [{"id": "b1"}],
+        [{"id": "i1", "boundary_id": "b1", "status": "supported"}],
+        [{"investigation_id": "i1", "outcome": "inconclusive",
+          "assessment": "根因成立但部署影响未知", "limitations": ["部署不可见"]}],
+    )
+    assert coverage["deferred"] == []
+    assert coverage["unresolved"][0]["id"] == "i1"
+
+
+def test_failed_inconclusive_review_remains_pending():
+    coverage = report_coverage(
+        [{"id": "b1"}],
+        [{"id": "i1", "boundary_id": "b1", "status": "supported"}],
+        [{"investigation_id": "i1", "outcome": "inconclusive",
+          "error": "复核请求失败"}],
+    )
+    assert coverage["deferred"] == [{"id": "i1", "reason": "独立上下文复核未完成"}]

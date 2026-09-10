@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "repo_id": "petclinic",
+  "commit": "818c4136ea971c21674525f9053de0d9c7ad8cfe",
+  "source_of_truth": "官方示例应用，无已知公开漏洞。",
+  "vulnerabilities": [],
+  "purpose": "误报控制。用于检验改造后的管线不会在安全基线上制造虚假高危发现。",
+  "scoring_note": "本仓库不计算召回率。核心指标是正式发现数量与严重性分布：出现 critical/high 即需逐条人工核对是否为误报。",
+  "known_benign_patterns": [
+    {
+      "note": "PetClinic 使用 Thymeleaf 模板与 JPA，正常业务代码不应被当作注入或越权。",
+      "risk": "若报告出现 sql_injection / path_traversal 类发现，需核对是否把 ORM API 误判为字符串拼接 SQL。"
+    },
+    {
+      "note": "示例应用没有认证授权层，缺少访问控制属于设计选择而非本项目声明的漏洞。",
+      "risk": "若报告大量出现 object_level_authorization，属于对'示例应用'的错误期望，应记为误报。"
+    }
+  ]
+}

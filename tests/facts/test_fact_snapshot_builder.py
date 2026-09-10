@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from secval.frontends import FactSnapshotBuilder
+from secval.services.kernel_bootstrap import _record_semantic_coverage_gaps
 
 
 def chunk(name, path, line):
@@ -43,3 +44,21 @@ def test_rebuild_invalidates_old_snapshot_facts_before_materialization():
     builder.rebuild([new])
     assert store.node("snapshot-1", old_id) is None
     assert store.coverage("snapshot-1")["fact_nodes"] == 1
+
+
+def test_kernel_semantic_gaps_prevent_syntax_only_complete_claim():
+    store = FactSnapshotBuilder("snapshot-1", "java", "0.23.5").build([
+        chunk("sample.Entry.read(java.lang.String)", "src/Entry.java", 4),
+    ])
+    _record_semantic_coverage_gaps(store, "snapshot-1")
+    coverage = store.coverage("snapshot-1")
+    assert coverage["complete"] is False
+    assert coverage["gap_categories"] == {
+        "authorization_semantics": 1,
+        "dependency_semantics": 1,
+        "guard_semantics": 1,
+        "resource_semantics": 1,
+        "state_semantics": 1,
+        "taint_effect_semantics": 1,
+        "taint_source_semantics": 1,
+    }

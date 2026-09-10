@@ -7,8 +7,6 @@ from secval.models.audit_contracts import ModelOutputError
 from secval.services.agent_team import (
     AgentTeam,
     bounded_path_groups,
-    deterministic_sink_sketches,
-    packet_security_signals,
 )
 from secval.services.path_validation_pipeline import (
     _continuation_operations,
@@ -242,6 +240,19 @@ def test_unrecognized_candidate_type_is_preserved_as_unknown_for_validation():
     assert (parsed["surface"], parsed["candidate_type"]) == ("other", "unknown")
 
 
+@pytest.mark.parametrize(("hypothesis", "expected"), [
+    ("攻击者可借DOCTYPE外部实体读取文件，形成XXE", "xxe"),
+    ("callback指向元数据服务造成SSRF", "ssrf"),
+    ("name包含../可造成路径穿越和任意文件读取", "path_traversal"),
+    ("text/html无转义导致存储XSS", "xss"),
+])
+def test_explicit_unknown_candidate_is_conservatively_classified(hypothesis, expected):
+    raw = sketch()
+    raw.update(candidate_type="unknown", hypothesis=hypothesis)
+    parsed = parse_work_result(result(raw), {"e-1": {}})["path_sketches"][0]
+    assert parsed["candidate_type"] == expected
+
+
 def test_related_paths_share_one_bounded_validation_packet():
     rows = []
     for number in range(2):
@@ -265,37 +276,10 @@ def test_entry_packet_grouping_deduplicates_without_reordering():
     assert bounded_path_groups(["A.java", "B.java", "A.java"]) == [["A.java", "B.java"]]
 
 
-def test_packet_security_signals_anchor_dangerous_syntax_without_inference():
-    signals = packet_security_signals({"e": {"content": (
-        'return ResponseEntity.location(uri); JWT.decode(token); '
-        'jdbc.executeQuery(sql); produces = MediaType.TEXT_HTML_VALUE;')}})
-    assert signals == ["executeQuery", "JWT.decode", "ResponseEntity.location", "MediaType.TEXT_HTML"]
-
-
-def test_deterministic_sink_inventory_creates_durable_candidates():
-    packets = [{"evidence": {"mapper": {
-        "relative_path": "src/main/resources/mapper/ProductMapper.xml",
-        "content": ('<select id="searchProducts"> ORDER BY ${sortField} </select>'
-                    '<select id="listProducts"> ORDER BY ${sortField} </select>'),
-    }, "controller": {
-        "relative_path": "src/main/java/demo/PageController.java",
-        "content": ("produces = MediaType.TEXT_HTML_VALUE\n"
-                    "@GetMapping(\"/{accountId}\")\n"
-                    "public Object get(@PathVariable String accountId) { return null; }"),
-    }, "config": {
-        "relative_path": "src/main/resources/application.yml",
-        "content": 'management:\n  endpoints:\n    web:\n      exposure:\n        include: "*"\n'
-                   'spring:\n  h2:\n    console:\n      enabled: true\n',
-    }}}]
-    rows = deterministic_sink_sketches(packets)
-    assert {(row["candidate_type"], row["deterministic_anchor"]) for row in rows} >= {
-        ("sql_injection", "${"), ("xss", "MediaType.TEXT_HTML")}
-    assert all(row["status"] == "queued_for_validation" for row in rows)
-    assert all(row["origins"] == [{"kind": "heuristic", "producer": "legacy_sink_bootstrap",
-                                   "role": "primary", "capability": "bootstrap_hint"}]
-               for row in rows)
-    assert {row["hops"][0] for row in rows if row["candidate_type"] == "sql_injection"} == {
-        "searchProducts", "listProducts"}
-    assert any(row["candidate_type"] == "object_level_authorization" for row in rows)
-    assert {row["deterministic_anchor"] for row in rows} >= {
-        "management-exposure-wildcard", "h2-console-enabled"}
+# 已删除的测试（[SECVAL-OVERFIT-1]）：
+#   test_packet_security_signals_anchor_dangerous_syntax_without_inference
+#   test_deterministic_sink_inventory_creates_durable_candidates
+# 这两个测试锁定的是本地硬编码 sink 词表（_SINK_RULES / packet_security_signals /
+# deterministic_sink_sketches）的行为。该词表按单一 benchmark 的答案定制，
+# 是过拟合的主要来源，已按方案1整体删除，因此对应测试一并移除。
+# 候选现在全部来自模型对固定快照的阅读，不再有本地预生成路径。

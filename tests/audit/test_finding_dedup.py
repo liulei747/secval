@@ -1,6 +1,6 @@
 """Formal findings are merged after every candidate source passes review."""
 
-from secval.services.finding_report import _deduplicate_findings
+from secval.services.finding_report import _deduplicate_findings, finding_identity
 
 
 def finding(entry, candidate):
@@ -46,3 +46,27 @@ def test_consolidated_route_merges_transitively_with_individual_routes():
 def test_different_routes_remain_separate():
     assert len(_deduplicate_findings([
         finding("GET /one", "one"), finding("POST /two", "two")])) == 2
+
+
+def test_canonical_identity_is_a_deduplication_fallback():
+    first = finding("unresolved entry one", "one")
+    second = finding("unresolved entry two", "two")
+    first["findingId"] = second["findingId"] = "svf_same"
+    assert len(_deduplicate_findings([first, second])) == 1
+
+
+def test_same_config_line_uses_semantic_sink_to_avoid_identity_collision():
+    evidence = {"config": {
+        "repository_id": "repo", "snapshot_id": "snap", "relative_path": "application.yml",
+        "start_line": 1, "end_line": 20, "content_sha256": "abc",
+    }}
+    base = {"root_control": "config", "ruleId": "hardcoded-secret",
+            "title": "hardcoded secret", "attackPath": {
+                "reachability": {"entrypoint": "configuration"},
+                "dataflow": {"sink": ""}}}
+    password = {**base, "attackPath": {**base["attackPath"],
+        "dataflow": {"sink": "spring.datasource.password"}}}
+    client_secret = {**base, "attackPath": {**base["attackPath"],
+        "dataflow": {"sink": "partners.client-secret"}}}
+    assert finding_identity(password, evidence)["findingId"] != finding_identity(
+        client_secret, evidence)["findingId"]

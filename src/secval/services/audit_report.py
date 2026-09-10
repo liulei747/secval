@@ -8,6 +8,21 @@ from secval.services.file_review_coverage import file_review_coverage
 from secval.services.report_coverage import report_coverage, report_completion
 
 
+def _discovery_provenance(findings):
+    """按发现来源分桶；不修改任何发现内容。"""
+    counts = {"model_reading": 0, "legacy_sink_bootstrap": 0}
+    for finding in findings:
+        leg = (finding.get("provenance") or {}).get("discoveryLeg") or "model_reading"
+        counts[leg] = counts.get(leg, 0) + 1
+    return {
+        "total": len(findings),
+        "byLeg": counts,
+        "note": "model_reading 表示发现来自模型阅读固定源码快照；"
+                "legacy_sink_bootstrap 表示来自已删除的本地 sink 词表（仅历史任务）。"
+                "若新任务仍出现 legacy_sink_bootstrap，说明存在未清理的硬编码发现路径。",
+    }
+
+
 def export_audit_report(task):
     report = deepcopy(task.get("report") or task.get("draft_report") or {})
     # 任务级 token 汇总：仅累计各请求记录中供应商上报的整数用量；
@@ -26,7 +41,8 @@ def export_audit_report(task):
     coverage = report.get("coverage") or report_coverage(boundaries, investigations, validations, task.get("baseline"))
     coverage["complete"] = False
     coverage["files"] = file_review_coverage(task.get("source_inventory"),
-        task.get("scope", {}).get("source_snapshot_id"), task.get("file_reviews", []))
+        task.get("scope", {}).get("source_snapshot_id"), task.get("file_reviews", []),
+        task.get("approved_config_paths", []))
     if task.get("status") != "needs_review":
         coverage["limitations"].append("任务未提交最终报告；此导出只包含当前已保存进度")
     supplied = task.get("supplied_threat_model", "")
@@ -95,10 +111,21 @@ def export_audit_report(task):
         "threatModel": {"summary": supplied} if supplied else deepcopy(generated),
         "generatedThreatModel": deepcopy(generated),
         "baseline": deepcopy(task.get("baseline")),
-        "kernelRuntime": deepcopy(task.get("kernel_runtime")),
+        # 方案4-B：B腿默认关闭。关闭时明确回报 disabled，避免让人以为存在
+        # 确定性分析兜底（内核结论永远不会提升为 Finding）。
+        "kernelRuntime": deepcopy(task.get("kernel_runtime")) or {
+            "status": "disabled",
+            "note": "安全分析内核（B腿）已按方案4-B从生产审计路径摘除；"
+                    "本报告的全部发现来自模型调查与独立复核，不含确定性内核结论。",
+        },
         "legacyReportReadOnly": task.get("legacy_report_read_only", False),
         "summary": report.get("summary", "未生成最终摘要"),
         "findings": report.get("findings", []) if task.get("report") else [],
+        # [SECVAL-OVERFIT-7] 发现来源统计：删除 sink 词表后新增任务应全部为
+        # model_reading；legacy_sink_bootstrap 只可能出现在删除前的历史任务中。
+        # 该字段用于度量"召回是否仍依赖硬编码词表"。
+        "discoveryProvenance": _discovery_provenance(
+            report.get("findings", []) if task.get("report") else []),
         "hypotheses": report.get("hypotheses", []),
         "candidateDetails": deepcopy(task.get("finding_detail_history", [])),
         "discoveryPackets": deepcopy(task.get("discovery_packets", [])),

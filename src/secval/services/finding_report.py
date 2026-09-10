@@ -15,8 +15,15 @@ def detail_digest(detail):
 
 def finding_identity(detail, evidence):
     root = evidence[detail["root_control"]]
+    # A config reader commonly returns the whole file as one evidence object,
+    # so several independent keys legitimately share line 1.  Location alone
+    # made those findings collide.  Add the stable semantic sink/entry while
+    # keeping discovery prose out of the identity.
+    routes = sorted(_routes(detail))
+    semantic_anchor = _sink_key(detail) or (routes[0] if routes else "")
     anchor = {"repository_id": root["repository_id"], "ruleId": detail["ruleId"],
-              "path": root["relative_path"], "line": root["start_line"]}
+              "path": root["relative_path"], "line": root["start_line"],
+              "semantic_anchor": semantic_anchor}
     fingerprint = detail_digest(anchor)
     occurrence = detail_digest({**anchor, "snapshot_id": root["snapshot_id"],
                                 "content_sha256": root["content_sha256"]})
@@ -69,7 +76,13 @@ def _same_finding(left, right):
 def _deduplicate_findings(findings):
     merged = []
     for finding in findings:
-        target = next((row for row in merged if _same_finding(row, finding)), None)
+        # findingId is the canonical structural identity.  _same_finding keeps
+        # compatibility with historical reports produced before that identity
+        # included a semantic anchor.
+        target = next((row for row in merged
+                       if (finding.get("findingId")
+                           and row.get("findingId") == finding.get("findingId"))
+                       or _same_finding(row, finding)), None)
         if target is None:
             candidate = finding["provenance"].pop("candidateId", None)
             finding["provenance"]["candidateIds"] = list(dict.fromkeys([
@@ -123,7 +136,21 @@ def assemble_findings(details, investigations, validations, evidence):
                 row["explanation_origin"] = "source_only"
             code_evidence.append(row)
         findings.append({**detail, **finding_identity(detail, evidence), "status": "static_supported_needs_review",
-                         "provenance": {"source": "secval-self-built", "candidateId": item["id"]},
+                         "provenance": {"source": "secval-self-built", "candidateId": item["id"],
+                                        # [SECVAL-OVERFIT-7] 记录候选来源，便于事后审计
+                                        # "这条发现是模型读源码得出的，还是本地词表生成的"。
+                                        # 删除 sink 词表后新增发现应全部为 model_reading；
+                                        # 历史任务可能仍为 legacy_sink_bootstrap，保留原值不篡改。
+                                        "discoveryLeg": _discovery_leg(item, detail)},
                          "detail_sha256": detail_digest(detail), "validation": review,
                          "codeEvidence": code_evidence})
     return _deduplicate_findings(findings), deferred
+
+
+def _discovery_leg(investigation, detail):
+    """区分发现的来源路径，不改变任何结论或状态。"""
+    marker = investigation.get("worker_candidate_id") or ""
+    origin = (detail.get("origin") or "").lower()
+    if "legacy_sink_bootstrap" in marker or "deterministic" in marker or origin == "heuristic":
+        return "legacy_sink_bootstrap"
+    return "model_reading"

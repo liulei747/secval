@@ -1,3 +1,8 @@
+"""[SECVAL-LEGACY-DISABLED]
+本模块已从生产审计路径摘除（方案4-B）。审计报告不再依赖其输出；
+代码与测试全部保留以便日后恢复，恢复方式见 docs/leg-b-status.md。
+"""
+
 """Production lifecycle assembly for the incrementally migrated analysis kernel."""
 
 import hashlib
@@ -15,8 +20,22 @@ from secval.analyzers import (
     TaintEngine,
 )
 from secval.facts import InMemoryFactStore
-from secval.frontends import ConfigFactBuilder, ConfigLayer, FactSnapshotBuilder
-from secval.semantics import ConfigurationPolicy, ModelStatus, SemanticRegistry
+from secval.frontends import (
+    ConfigFactBuilder,
+    ConfigLayer,
+    DependencyFactBuilder,
+    FactSnapshotBuilder,
+    JavaSpringSecurityFactBuilder,
+)
+from secval.semantics import (
+    ConfigurationPolicy,
+    ControlContract,
+    FailureBehavior,
+    FrameworkModel,
+    ModelKind,
+    ModelStatus,
+    SemanticRegistry,
+)
 from secval.services.kernel_runtime import (
     KernelCheckpointStore,
     KernelMigrationRuntime,
@@ -114,7 +133,9 @@ def _build_facts(task, source_store, graph_store):
     source_snapshot_id = task.get("scope", {}).get("source_snapshot_id")
     if not source_snapshot_id:
         return facts
-    from secval.code_processing.repository_processing.process_repository import process_repository
+    from secval.code_processing.repository_processing.process_repository import (
+        process_repository,
+    )
     from secval.models.identifiers import RepositoryId, SnapshotId
     with source_store.indexing_directory(source_snapshot_id) as directory:
         processed = process_repository(
@@ -129,15 +150,62 @@ def _build_facts(task, source_store, graph_store):
         processed.chunks, graph_calls=graph_calls,
         parse_failures=((row.relative_path, row.message) for row in processed.errors),
     )
+    JavaSpringSecurityFactBuilder().build(
+        facts, task["snapshot_id"], processed.chunks, graph_calls=graph_calls,
+    )
     layers = []
     formats = {".yml": "yaml", ".yaml": "yaml", ".json": "json",
                ".toml": "toml", ".properties": "properties"}
+    dependency_formats = {
+        "pom.xml": "maven-pom",
+        "package-lock.json": "package-lock",
+        "requirements.txt": "requirements",
+        "bom.json": "cyclonedx-json",
+    }
     for path, _, content in source_store.iter_captured_files(source_snapshot_id):
+        dependency_format = dependency_formats.get(Path(path).name.lower())
+        if dependency_format:
+            DependencyFactBuilder().build(
+                facts, task["snapshot_id"], path, content, dependency_format,
+            )
         format_name = formats.get(Path(path).suffix.lower())
         if format_name and (path.startswith("src/main/resources/") or path in task.get("approved_config_paths", ())):
             layers.append(ConfigLayer("base", format_name, path, content, 100))
     ConfigFactBuilder().build(facts, task["snapshot_id"], layers)
+    _record_semantic_coverage_gaps(facts, task["snapshot_id"])
     return facts
+
+
+def _record_semantic_coverage_gaps(facts, snapshot_id):
+    """Make missing analyzer inputs visible instead of reporting parse-complete.
+
+    Structural parsing and security-semantic coverage are different claims. A
+    repository can have hundreds of syntax nodes and no Source/Effect/Principal
+    or operation facts.  Persist one deterministic gap per empty semantic
+    family so release reports cannot interpret ``parse_gaps=0`` as kernel
+    readiness.
+    """
+    from secval.facts import ParseGap, SourceLocation, stable_node_id
+
+    nodes = facts.nodes(snapshot_id)
+    checks = {
+        "taint_source_semantics": lambda row: row.attributes.get("semantic_kind") == "source",
+        "taint_effect_semantics": lambda row: row.attributes.get("semantic_kind") == "effect",
+        "authorization_semantics": lambda row: bool(row.attributes.get("authorization_requirements")),
+        "guard_semantics": lambda row: bool(row.attributes.get("requires_guard")),
+        "resource_semantics": lambda row: str(row.kind) == "resource",
+        "state_semantics": lambda row: bool(row.attributes.get("entity") and row.attributes.get("operation")),
+        "dependency_semantics": lambda row: str(row.kind) == "dependency",
+    }
+    fallback = nodes[0].location if nodes else SourceLocation("<snapshot>", 1)
+    for category, predicate in checks.items():
+        if any(predicate(node) for node in nodes):
+            continue
+        facts.add_gap(ParseGap(
+            stable_node_id("kernel", "semantic_gap", category), snapshot_id, category,
+            f"production frontend emitted no {category} facts", fallback,
+            "kernel-bootstrap", "semantic-coverage-v1",
+        ))
 
 
 def production_analyzers(task, *, source_store=None, graph_store=None):
@@ -148,7 +216,11 @@ def production_analyzers(task, *, source_store=None, graph_store=None):
     it never promotes a legacy/model hint into a kernel verdict.
     """
     facts = _build_facts(task, source_store, graph_store)
-    semantics = SemanticRegistry(configuration_policies=list(_spring_configuration_policies()))
+    semantics = SemanticRegistry(
+        models=list(_java_spring_security_models()),
+        controls=list(_java_spring_controls()),
+        configuration_policies=list(_spring_configuration_policies()),
+    )
     return (
         _TaintInvocation(TaintEngine(facts, semantics), task),
         GuardEngine(facts, semantics),
@@ -159,3 +231,36 @@ def production_analyzers(task, *, source_store=None, graph_store=None):
         StateMachineEngine(facts, semantics),
         RaceTransactionEngine(facts, semantics),
     )
+
+
+def _java_spring_security_models():
+    tested = frozenset({"positive", "negative", "wrapper", "inheritance", "overload", "version"})
+    common = {"revision": 1, "language": "java", "framework": "spring",
+              "version_range": ">=6,<7", "status": ModelStatus.VERIFIED,
+              "test_coverage": tested, "evidence_refs": ("spring-framework-contracts",),
+              "approved_by": "secval-builtin-review"}
+    kinds = {row[0] for row in JavaSpringSecurityFactBuilder.EFFECTS}
+    models = [FrameworkModel(
+        id="java-spring-http-input", kind=ModelKind.SOURCE,
+        signature=JavaSpringSecurityFactBuilder.SOURCE_SIGNATURE,
+        taint_kinds=frozenset(kinds), **common,
+    )]
+    for taint_kind, signature, _ in JavaSpringSecurityFactBuilder.EFFECTS:
+        models.append(FrameworkModel(
+            id=signature.replace("secval.java.", "").replace("-", "."),
+            kind=ModelKind.EFFECT, signature=signature,
+            taint_kinds=frozenset({taint_kind}), **common,
+        ))
+    return tuple(models)
+
+
+def _java_spring_controls():
+    return (ControlContract(
+        id="java-spring-identity-equality", revision=1,
+        signature="secval.java.guard.identity-equality",
+        input_states=frozenset(), output_states=frozenset(),
+        applicable_taint_kinds=frozenset({"resource_identity"}),
+        accept_condition="authenticated principal identity equals requested resource identity",
+        failure_behavior=FailureBehavior.TERMINATES, status=ModelStatus.VERIFIED,
+        evidence_refs=("java-language-control-flow",), approved_by="secval-builtin-review",
+    ),)

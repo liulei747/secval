@@ -54,3 +54,10 @@ docs/*
 !docs/adr/0012-release-quality-gate.md
 gpu-wheels
 node_modules/
+
+# 留出集外部仓库：按 benchmarks/holdout/manifest.json 的 commit 克隆，体积大不入库
+benchmarks/holdout/repos/
+benchmarks/holdout/results/
+
+# 本次改造新增的说明文档
+!docs/leg-b-status.md

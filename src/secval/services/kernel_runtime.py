@@ -1,3 +1,8 @@
+"""[SECVAL-LEGACY-DISABLED]
+本模块已从生产审计路径摘除（方案4-B）。审计报告不再依赖其输出；
+代码与测试全部保留以便日后恢复，恢复方式见 docs/leg-b-status.md。
+"""
+
 """Incremental dual-run bridge from the legacy audit to the analysis kernel."""
 
 import json

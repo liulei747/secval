@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "repo_id": "flask-src",
+  "commit": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+  "source_of_truth": "成熟框架源码，核心安全职责由框架本身承担且有专门维护。",
+  "vulnerabilities": [],
+  "purpose": "边界理解测试。检验模型能否区分'框架内部的安全机制实现'与'应用层漏洞'。",
+  "scoring_note": "本仓库不计算召回率。核心指标是误报：把框架的安全实现细节当作漏洞即为误报。",
+  "known_benign_patterns": [
+    {
+      "path": "src/flask/",
+      "note": "Flask 的会话签名、模板自动转义、请求解析都是既定安全机制。"
+    },
+    {
+      "note": "werkzeug 提供的调试器与重载器默认不用于生产，属于文档化的部署约束。",
+      "risk": "若报告把 debug 模式或 reloader 记为高危，需核对是否忽略了框架文档中的部署前提。"
+    },
+    {
+      "note": "框架面向开发者暴露的 API 默认信任调用方，这是库的契约而非漏洞。",
+      "risk": "若报告大量出现 trust_boundary/authorization 类发现，属于把库的调用契约误当漏洞。"
+    }
+  ]
+}

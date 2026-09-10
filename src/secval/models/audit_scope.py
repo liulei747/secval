@@ -20,7 +20,13 @@ def is_executable_descriptor(path):
     """Descriptors that are executable program behavior, rather than secrets/config input."""
     normalized = path.replace("\\", "/").lower()
     name = normalized.rsplit("/", 1)[-1]
-    return normalized.endswith(".xml") and ("/mapper/" in normalized or name.endswith("mapper.xml"))
+    dependency_manifests = {
+        "pom.xml", "build.gradle", "build.gradle.kts", "package-lock.json",
+        "requirements.txt", "poetry.lock", "cargo.lock", "go.sum", "bom.json",
+    }
+    return (name in dependency_manifests
+            or (normalized.endswith(".xml")
+                and ("/mapper/" in normalized or name.endswith("mapper.xml"))))
 
 
 def validate_config_paths(paths, scope_paths):

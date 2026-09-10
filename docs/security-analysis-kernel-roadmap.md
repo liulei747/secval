@@ -242,4 +242,19 @@ K12 发布门禁未通过：同输入、同快照、同预算的最终续跑任�
 - 2026-09-10 完成真实入口接线、Ledger 快照续跑、运行时签名失效、Neo4j 调用边导出和冻结源码事实装配；生产镜像相关门禁 160 项通过，续跑专项门禁 4 项、路径与 Kernel 集成门禁 31 项通过。
 - 修复续跑把无结果失败分片误标为 `canonical_candidate_ready`、格式修复第 5 次调用不可达、未知候选类型导致整包丢弃，以及新增草图复用已完成验证包 ID 后无法重新调度四个真实缺陷。
 - 最终真实续跑任务 `cfce77188f06437081e3714467c8a402` 完成 128/128 路径验证、34/34 候选独立复核并产出 20 个正式 Finding；Kernel 8/8 分析器完成，Ledger 3 个候选/3 个事件且哈希链有效，事实覆盖 345 节点/72 边/0 ParseGap。产物保存在 `benchmarks/kernel_quality/results/real-sinkspring-k11-final-2026-09-10/`。
+- 2026-09-10 覆盖缺口修复：PathSketch 模式恢复独立基线 worker，避免包内验证替代独立漏检检查；Finding 身份增加稳定语义 Sink/入口锚点，并以 canonical `findingId` 兜底合并，消除同一配置文件首行多项缺陷的身份碰撞与重复导出。
+- 生产事实装配现已读取 Maven `pom.xml`、npm `package-lock.json`、锁定的 `requirements.txt` 与 CycloneDX JSON。Java/Spring 前端开始生成保守的 HTTP Source、SQL/命令/文件/网络/XML/反序列化/JNDI/模板 Effect，并把已解析跨方法调用投影为候选数据流；该层只产生 `NEEDS_REVIEW`，不能绕过独立复核。对于尚未产出 Authorization、Guard、State 或其他语义输入的族，Kernel 写入确定性的 semantic coverage gap，结构解析成功不再显示为安全语义完整。此项尚未宣称 K12 达标；必须完成真实复测并用仓库外私有真值评分。
+- Java/Spring 授权事实开始识别同时包含客户端身份头和路径资源 ID 的 HTTP 操作，显式生成 `client_controlled` Principal、Resource 与 ownership Requirement。离线 SinkSpring 快照识别出 2 个待复核授权操作；没有客户端身份头的普通路径参数不会被推断成该类候选。Source 与 Effect、Resource 等输入族分别统计 semantic gap，避免其中一侧存在时掩盖另一侧缺失。
+- Guard 前端开始识别 Principal 与路径 Resource 的同值比较，只有否定分支明确 `throw`/`return` 时才生成终止型 identity guard；控制流只连接 Source→Guard→Operation，不保留绕过边。经验证的 Guard 契约可让 GuardEngine 输出支配、同值、失败终止且无绕过路径的反证；单纯比较或不终止分支不会被当作有效控制。
+- Principal 信任不再一律按请求头处理：仅观察到明确的 `verifySession`、`verifyToken` 或 `authenticate` 调用且参数是同一个请求头变量时，才升级为 `server_authenticated`；只解码或直接读取声明仍保持 `client_controlled`。身份验证不会自动证明资源归属，缺少 ownership Guard 时仍生成对象授权候选。
+- 独立基线 worker 的一次性报告前收尾现覆盖 `worker_step_limit` 和已保存上下文的 `model_output_truncated`，并优先于普通发现 worker；真实续跑 `6da55ab949854d2b8523341cfe5dc590` 已提交 6 个基线问题，消除了“独立基线尚未提交”原因。
+- 报告组装可从带源码证据的边界台账确定性派生结构化威胁模型，并明确保留未登记部署边界为未知项；主模型漏调 `record_threat_model` 不再产生空模型。基线问题仅在标准化 API 路由精确重合时自动补充来源关联，宽泛问题继续保留为缺口。
+- 明确写出 XXE、SSRF、XSS、SQL/命令注入、路径穿越、反序列化、JWT/IDOR、硬编码凭据及配置缺陷的 `unknown` PathSketch 会在验证前保守归一化；无法唯一判断的类型仍保持 `unknown`。真实报告离线重算可精确关联 4/6 个基线问题，并成功派生 30 个边界的结构化威胁模型。
+- 独立复核现按漏洞语义补入标准依赖清单和已批准配置；`pom.xml`、Gradle/npm/Python/Cargo/Go 锁文件及 CycloneDX `bom.json` 被视为只读程序描述符，普通配置与密钥文件仍需显式批准。批准路径本身和基线来源关联不再污染复核输入哈希，只有实际新增证据才使缓存失效。
+- 补证后的检查点续跑 `94dab10a326646bb959e9d5776f9b1cc` 用 12 次模型调用完成 61 项复核，其中 21 个复核包实际包含 `pom.xml`；正式 Finding 为 38 个且 ID 全部唯一，supported/refuted/inconclusive 为 51/1/9，仍有 3 个请求级复核失败。产物保存在 `benchmarks/kernel_quality/results/real-sinkspring-review-context-fixed-2026-09-10/`。
+- 大范围续跑新增独立整文件审阅 worker：只计算受支持源码、可执行构建描述符及用户批准配置，`.gitignore`、IDE 元数据和纯数据 SQL 不再错误进入完成分母；已完成文件按内容摘要登记，最多四个并行有界证据包，后续续跑继续处理剩余项。
+- 针对 Controller/Mapper 因包外实现而长期 `partial` 的问题，重审包会附带直接导入的项目类型和同名 Mapper XML；同一 `file_id` 的新 `reviewed_static` 结论可升级旧 `partial`，但完整结论不会被后续不完整结论降级。最终任务 `25a0be42c66249caa4ab3636c9b3a78c` 已将 54/54 个可审计文件收口，剩余文件为 0，7 个文件明确标为不适用；39 个正式 Finding，61 项独立复核为 52 supported、1 refuted、8 inconclusive。报告仍诚实保持 `partial_report`，原因只剩 2 个未接续基线问题和证据不足/详情版本待复核项。产物保存在 `benchmarks/kernel_quality/results/real-sinkspring-file-complete-2026-09-10/`。
+- 修复续跑复核调度只按 `investigation_id` 占位、忽略候选详情版本的问题：只有 `detail_sha256` 与当前详情完全一致的成功复核才会跳过调度；旧版或失败复核会被当前结果槽移除，并保留在父任务历史中供输入真正一致时复用。由此 `investigation-57` 的新版详情在下次续跑会实际进入独立复核，不再永久形成“缺少当前详情版本”缺口。
+- 完成度状态区分“工作未执行”和“检查已执行但结论不确定”：失败复核、缺详情、开放调查继续进入 `deferred` 并保持 `partial_report`；具有证据的独立基线终态及成功完成的 `inconclusive` 复核进入 `unresolved`，完整保留局限但不再让报告永久无法结束。`recorded_checks_closed` 仍明确保持 `completeSecurityAudit=false`，不把静态未知项伪装为安全或完整审计。
+- 真实续跑任务 `7bc2d9bb398e4798a1e559d26fb8210c` 已在新镜像实际完成：61 项独立复核全部有终态，52 supported、1 refuted、8 inconclusive；39 个正式 Finding 保持不变，文件 remaining/excluded 均为 0，`deferred=0`，10 项证据或部署不确定性完整保留在 `unresolved`。最终完成状态为 `recorded_checks_closed` 且 `completeSecurityAudit=false`，产物保存在 `benchmarks/kernel_quality/results/real-sinkspring-recorded-checks-closed-2026-09-10/`。
 

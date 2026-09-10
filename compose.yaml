@@ -26,6 +26,10 @@ services:
     environment:
       - HF_HOME=/models/huggingface
       - HF_HUB_DISABLE_XET=1
+      # 模型已缓存在 huggingface-cache 卷中；离线模式避免启动时访问 huggingface.co。
+      # 容器内无出网时，默认的在线检查会重试5次并阻塞启动。
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
       - PYTHONUNBUFFERED=1
       - SECVAL_REPOSITORIES_ROOT=/repositories
       - SECVAL_AUDIT_API_URL=${SECVAL_AUDIT_API_URL:-}

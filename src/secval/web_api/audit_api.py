@@ -1,7 +1,7 @@
 """单用户本机审计入口；不适合直接暴露公网。"""
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from secval.config.audit_settings import load_audit_settings
@@ -154,10 +154,18 @@ def get_markdown_report(task_id: str, request: Request):
     })
 
 
+@router.get("/audit", response_class=HTMLResponse)
 def audit_page():
-    from secval.web_api.audit_console import audit_console_html
-    return audit_console_html()
-    return """<!doctype html><html lang="zh"><meta charset="utf-8">
+    """审计控制台页面。
+
+    说明：前端重构（e5975d6）移除了原先的内联控制台，audit_console_html 模块
+    从未提交，导致该路由缺失。这里恢复一个自包含的最小控制台，覆盖真实可用的
+    接口：创建、取消、续跑、报告收口查看与导出。
+    """
+    return HTMLResponse(AUDIT_PAGE_HTML)
+
+
+AUDIT_PAGE_HTML = """<!doctype html><html lang="zh"><meta charset="utf-8">
 <title>Secval 只读审计实验</title><style>
 body{max-width:960px;margin:40px auto;font:16px system-ui;background:#f6f7fa;color:#243043}
 textarea,select,button{padding:10px;margin:8px 0}textarea{width:95%;height:100px}
@@ -171,22 +179,22 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:20px}
 <textarea id="threat" maxlength="12000" placeholder="可选：已有威胁模型，原文保留；不要填写密钥"></textarea>
 <textarea id="paths" placeholder="可选：限定审计文件或目录，每行一个仓库相对路径；留空表示全部索引范围"></textarea>
 <textarea id="configs" placeholder="可选：明确批准读取的配置文件，每行一个精确相对路径；不要填写 .env 或密钥文件"></textarea>
-<label>本次模型调用上限 <input id="steps" type="number" min="1" max="300" value="12"></label><br>
-<label>本次时长预算（秒） <input id="seconds" type="number" min="30" max="3600" value="300"></label>
+<label>本次模型调用上限 <input id="maxSteps" type="number" min="1" max="300" value="12"></label><br>
+<label>本次时长预算（秒） <input id="maxSeconds" type="number" min="30" max="3600" value="300"></label>
 <br><label>同时运行Agent数（含主Agent） <input id="agents" type="number" min="2" max="4" value="3"></label>
 <p>所有Agent共享本次总调用预算；增加并发不增加总额度。旧串行任务续跑保留原模式，新任务使用协作模式。</p>
 <p>增大预算会增加调用与费用。时长在请求之间检查，已发送请求可能超出该时长；不是费用上限。</p>
 <label><input type="checkbox" id="baseline" checked>先建立独立上下文基线</label><br>
 <label><input type="checkbox" id="consent">允许将任务及候选源码发送给审计模型API</label><br>
 <label><input type="checkbox" id="configConsent">允许将选定配置正文发送给审计模型API（可能含凭据）</label><br>
-<button id="start">开始调查</button><button id="cancel">取消当前任务</button>
-<button id="recover">确认失联任务</button>
-<button id="resume">从检查点续跑（新任务）</button>
+<button id="start">开始调查</button><button id="resumeAudit">从检查点续跑（新任务）</button>
+<button id="cancel">取消当前任务</button>
 <button id="export">导出原始JSON（含源码）</button><button id="exportMd">导出Markdown报告</button>
 <a id="graphLink" href="/graph" style="margin-left:10px">打开代码关系查询</a>
 <button id="refresh">刷新历史</button><select id="history"></select>
 <h2>子Agent进度</h2><p id="teamSummary">尚未选择任务</p>
 <table><thead><tr><th>编号</th><th>分工</th><th>任务</th><th>状态</th><th>本次/历史调用</th><th>停止原因</th></tr></thead><tbody id="workers"></tbody></table>
+<h2>报告收口</h2><pre id="completionDetail">尚未选择任务</pre>
 <details><summary>完整任务记录（包含源码，请勿公开分享）</summary><pre id="out">等待任务</pre></details>
 <script>
 let current=null; const el=id=>document.getElementById(id);
@@ -197,30 +205,25 @@ for(const t of tasks){const o=new Option(t.status+' · '+t.objective,t.id);el('h
 if(!tasks.some(t=>t.id===current))current=tasks.length?tasks[0].id:null;
 if(current){el('history').value=current;await show();}}
 async function show(){if(!current)return;const task=await api('/api/audits/'+current);el('out').textContent=JSON.stringify(task,null,2);
-const owner=task.worker_id?('；执行者：'+task.worker_id.slice(0,8)+'；第'+task.attempt+'次尝试；最近心跳：'+(task.heartbeat_at?new Date(task.heartbeat_at).toLocaleTimeString():'暂无')+'；租约：'+task.lease_state):'；排队等待Worker认领';
-el('teamSummary').textContent='任务状态：'+task.status+'；总调用：'+(task.model_calls||0)+' / '+task.max_steps+'；并发上限：'+(task.parallel_agents||1)+owner+(task.execution_active&& !['running','queued'].includes(task.status)?'；正在等待已发送请求退出':'');
-let completionText='报告收口状态：任务还在运行，尚未生成报告';
+const owner=task.worker_id?('；执行者：'+task.worker_id.slice(0,8)+'；第'+task.attempt+'次尝试；租约：'+task.lease_state):'；排队等待Worker认领';
+el('teamSummary').textContent='任务状态：'+task.status+'；总调用：'+(task.model_calls||0)+' / '+task.max_steps+'；并发上限：'+(task.parallel_agents||1)+owner;
+let text='报告收口状态：任务还在运行，尚未生成报告';
 if(['needs_review','failed','cancelled','interrupted','budget_exhausted'].includes(task.status)){
   try{const report=await api('/api/audits/'+encodeURIComponent(current)+'/report');
     const completion=report.completion||{};
-    completionText='报告收口状态：'+(completion.state||'未知')
-      +'；未收口原因：'+((completion.pendingReasons||[]).join('；')||'无');
+    text='报告收口状态：'+(completion.state||'未知')+'；未收口原因：'+((completion.pendingReasons||[]).join('；')||'无');
     const usage=report.tokenUsage||{};
-    if(usage.requestsTotal>0){completionText+='；模型用量：输入'+(usage.promptTokens||0)
-      '+输出'+(usage.completionTokens||0)+'='+(usage.totalTokens||0)+' token'
-      +'（'+usage.requestsCountedBySupplier+'/'+usage.requestsTotal+' 次请求有用量上报）';}
-    const scopes=(report.scopeCoverage||{}).groups||[];
-    if(scopes.length){completionText+='；范围子任务：'+scopes.map(s=>s.scope+'('
-      +(s.delivered?'已交付':'未交付')+')').join('、');}
-  }catch(e){completionText='报告收口状态：读取失败：'+e.message;}
+    if(usage.requestsTotal>0){text+='\\n模型用量：输入'+(usage.promptTokens||0)+'+输出'+(usage.completionTokens||0)+'='+(usage.totalTokens||0)+' token';}
+    const stages=(report.coverage&&report.coverage.stages)||[];
+    if(stages.length){text+='\\n阶段账本：'+stages.map(s=>s.name||s.id).join('、');}
+  }catch(e){text='报告收口状态：读取失败：'+e.message;}
 }
-el('completionSummary').textContent=completionText;
+el('completionSummary').textContent=text.split('\\n')[0];el('completionDetail').textContent=text;
 el('workers').replaceChildren();for(const worker of task.agent_tasks||[]){const row=document.createElement('tr');
-for(const value of [worker.id,worker.role,worker.assignment.title,(worker.effective_status||worker.status)+(worker.reused_result?'（复用结果）':''),worker.calls+' / '+(worker.prior_calls||0),worker.stop_reason||'']){const cell=document.createElement('td');cell.textContent=String(value);row.appendChild(cell);}el('workers').appendChild(row);}}
-el('start').onclick=async()=>{try{const scope=JSON.parse(el('repo').value);const t=await api('/api/audits',{objective:el('goal').value,...scope,security_context:el('context').value,supplied_threat_model:el('threat').value,scope_paths:lines('paths'),approved_config_paths:lines('configs'),max_steps:Number(el('steps').value),max_seconds:Number(el('seconds').value),parallel_agents:Number(el('agents').value),independent_baseline:el('baseline').checked,allow_remote_config:el('configConsent').checked,allow_remote_code:el('consent').checked});current=t.id;await show();await history();}catch(e){el('out').textContent=e.message;}};
-el('resume').onclick=async()=>{if(!current)return;try{const t=await api('/api/audits/'+encodeURIComponent(current)+'/resume',{max_steps:Number(el('steps').value),max_seconds:Number(el('seconds').value),allow_remote_code:el('consent').checked,allow_remote_config:el('configConsent').checked});current=t.id;await show();await history();}catch(e){el('out').textContent=e.message;}};
+for(const value of [worker.id,worker.role,worker.assignment&&worker.assignment.title,(worker.effective_status||worker.status)+(worker.reused_result?'（复用结果）':''),worker.calls+' / '+(worker.prior_calls||0),worker.stop_reason||'']){const cell=document.createElement('td');cell.textContent=String(value);row.appendChild(cell);}el('workers').appendChild(row);}}
+el('start').onclick=async()=>{try{const scope=JSON.parse(el('repo').value);const t=await api('/api/audits',{objective:el('goal').value,...scope,security_context:el('context').value,supplied_threat_model:el('threat').value,scope_paths:lines('paths'),approved_config_paths:lines('configs'),max_steps:+el('maxSteps').value,max_seconds:+el('maxSeconds').value,parallel_agents:+el('agents').value,independent_baseline:el('baseline').checked,allow_remote_config:el('configConsent').checked,allow_remote_code:el('consent').checked});current=t.id;await show();await history();}catch(e){el('out').textContent=e.message;}};
+el('resumeAudit').onclick=async()=>{if(!current)return;try{const t=await api('/api/audits/'+encodeURIComponent(current)+'/resume',{max_steps:+el('maxSteps').value,max_seconds:+el('maxSeconds').value,allow_remote_code:el('consent').checked,allow_remote_config:el('configConsent').checked});current=t.id;await show();await history();}catch(e){el('out').textContent=e.message;}};
 el('cancel').onclick=async()=>{if(current){await api('/api/audits/'+current+'/cancel',{});await show();}};
-el('recover').onclick=async()=>{if(current){try{await api('/api/audits/'+current+'/recover-stale',{});await show();}catch(e){el('out').textContent=e.message;}}};
 el('export').onclick=()=>{if(current)window.location.href='/api/audits/'+encodeURIComponent(current)+'/report';};
 el('exportMd').onclick=()=>{if(current)window.location.href='/api/audits/'+encodeURIComponent(current)+'/report.md';};
 el('refresh').onclick=history;el('history').onchange=()=>{current=el('history').value;show();};
